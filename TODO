@@ -1,0 +1,10 @@
+* More checks.
+* Make cargo audit work for specific version of the code when available.
+* If not access rustsec.org for the list of known malicious stuff.
+* Further checks for malicious stuff.
+* Checks for JetBrains IDE, Eclipse, Theia and other stuff.
+* repo tooling (Husky, Lefthook) that execute code.
+* Python vulnerabilities.
+* .claude.md or similar vulnerabilities.
+
+
