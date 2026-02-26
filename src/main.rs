@@ -28,7 +28,6 @@ enum Severity {
     High,
     Medium,
     Low,
-    Info,
 }
 
 impl std::fmt::Display for Severity {
@@ -38,7 +37,6 @@ impl std::fmt::Display for Severity {
             Severity::High => write!(f, "{}", "HIGH".red()),
             Severity::Medium => write!(f, "{}", "MEDIUM".yellow()),
             Severity::Low => write!(f, "{}", "LOW".blue()),
-            Severity::Info => write!(f, "{}", "INFO".cyan()),
         }
     }
 }
@@ -1935,7 +1933,6 @@ fn print_findings(findings: &[Finding]) {
             Severity::High => 1,
             Severity::Medium => 2,
             Severity::Low => 3,
-            Severity::Info => 4,
         }
     };
 
